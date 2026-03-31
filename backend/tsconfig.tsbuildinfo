@@ -1,0 +1,1 @@
+{"root":["./src/db.ts","./src/index.ts","./src/types.ts","./src/services/internet.ts","./src/services/library.ts","./src/services/musicbrainz.ts","./src/services/ollama.ts","./src/services/scanner.ts","./src/services/youtube.ts"],"version":"6.0.2"}
