@@ -251,8 +251,6 @@ function App() {
                       color="blue" 
                       onYoutubeSearch={() => handleYoutubeSearch(file.id!, file.baseName)} 
                       searchingYoutube={searchingYtId === file.id}
-                      onSpotifySearch={() => handleSpotifySearch(file.id!, file.baseName)}
-                      searchingSpotify={searchingSpotifyId === file.id}
                     />
                   ))}
                 </div>
@@ -289,7 +287,13 @@ function App() {
                   {matchState.unmatchedVideo.length === 0 ? (
                      <div className="text-center text-sm text-gray-500 mt-10">No unmatched videos.</div>
                   ) : matchState.unmatchedVideo.map(file => (
-                    <FileCard key={file.filename} file={file} color="purple" />
+                    <FileCard
+                      key={file.filename}
+                      file={file}
+                      color="purple"
+                      onSpotifySearch={() => handleSpotifySearch(file.id!, file.baseName)}
+                      searchingSpotify={searchingSpotifyId === file.id}
+                    />
                   ))}
                 </div>
               </div>
@@ -379,43 +383,44 @@ function FileCard({ file, color, onYoutubeSearch, searchingYoutube, onSpotifySea
         </div>
       </div>
       
-      {color === 'blue' && (onYoutubeSearch || onSpotifySearch) && (
+      {color === 'blue' && onYoutubeSearch && (
         <div className="shrink-0 ml-2 flex flex-col gap-1 items-end">
-          {onYoutubeSearch && (
-            file.youtubeUrl ? (
-              <button 
-                onClick={() => { navigator.clipboard.writeText(file.youtubeUrl!); alert('Copied YouTube Link to download!'); }}
-                className="px-2 py-1 bg-red-600/20 hover:bg-red-600/40 text-red-500 rounded text-[10px] font-bold border border-red-500/30 transition flex items-center gap-1"
-              >
-                Copy YT Link
-              </button>
-            ) : (
-              <button 
-                onClick={onYoutubeSearch}
-                disabled={searchingYoutube}
-                className="px-2 py-1 bg-gray-800 border border-gray-700 hover:border-gray-500 text-gray-400 rounded text-[10px] font-medium transition opacity-0 group-hover:opacity-100 disabled:opacity-50"
-              >
-                {searchingYoutube ? 'Searching...' : 'Find Video'}
-              </button>
-            )
+          {file.youtubeUrl ? (
+            <button 
+              onClick={() => { navigator.clipboard.writeText(file.youtubeUrl!); alert('Copied YouTube Link to download!'); }}
+              className="px-2 py-1 bg-red-600/20 hover:bg-red-600/40 text-red-500 rounded text-[10px] font-bold border border-red-500/30 transition flex items-center gap-1"
+            >
+              Copy YT Link
+            </button>
+          ) : (
+            <button 
+              onClick={onYoutubeSearch}
+              disabled={searchingYoutube}
+              className="px-2 py-1 bg-gray-800 border border-gray-700 hover:border-gray-500 text-gray-400 rounded text-[10px] font-medium transition opacity-0 group-hover:opacity-100 disabled:opacity-50"
+            >
+              {searchingYoutube ? 'Searching...' : 'Find Video'}
+            </button>
           )}
-          {onSpotifySearch && (
-            file.spotifyUrl ? (
-              <button 
-                onClick={() => { navigator.clipboard.writeText(file.spotifyUrl!); alert('Copied Spotify Link!'); }}
-                className="px-2 py-1 bg-green-600/20 hover:bg-green-600/40 text-green-500 rounded text-[10px] font-bold border border-green-500/30 transition flex items-center gap-1"
-              >
-                Copy Spotify
-              </button>
-            ) : (
-              <button 
-                onClick={onSpotifySearch}
-                disabled={searchingSpotify}
-                className="px-2 py-1 bg-gray-800 border border-gray-700 hover:border-gray-500 text-gray-400 rounded text-[10px] font-medium transition opacity-0 group-hover:opacity-100 disabled:opacity-50"
-              >
-                {searchingSpotify ? 'Searching...' : 'Find Spotify'}
-              </button>
-            )
+        </div>
+      )}
+
+      {color === 'purple' && onSpotifySearch && (
+        <div className="shrink-0 ml-2">
+          {file.spotifyUrl ? (
+            <button 
+              onClick={() => { navigator.clipboard.writeText(file.spotifyUrl!); alert('Copied Spotify Link!'); }}
+              className="px-2 py-1 bg-green-600/20 hover:bg-green-600/40 text-green-500 rounded text-[10px] font-bold border border-green-500/30 transition flex items-center gap-1"
+            >
+              Copy Spotify
+            </button>
+          ) : (
+            <button 
+              onClick={onSpotifySearch}
+              disabled={searchingSpotify}
+              className="px-2 py-1 bg-gray-800 border border-gray-700 hover:border-gray-500 text-gray-400 rounded text-[10px] font-medium transition opacity-0 group-hover:opacity-100 disabled:opacity-50"
+            >
+              {searchingSpotify ? 'Searching...' : 'Find Spotify'}
+            </button>
           )}
         </div>
       )}

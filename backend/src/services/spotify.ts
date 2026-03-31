@@ -45,6 +45,22 @@ export class SpotifyService {
   }
 
   /**
+   * Removes common video title noise (e.g. "Official Music Video", "[4K]", "(MV)")
+   * so the query sent to Spotify's search is as clean as possible.
+   */
+  private cleanQuery(raw: string): string {
+    return raw
+      // Remove bracketed/parenthesised noise: [Official], (MV), [4K UHD], etc.
+      .replace(/[\[(][^\])]*(official|mv|m\/v|music video|video|hd|4k|uhd|lyric|audio|ver\.?|version|ft\.?|feat\.?)[^\])]*[\])]/gi, '')
+      // Remove standalone suffixes that aren't inside brackets
+      .replace(/\b(official music video|official video|music video|official mv|official m\/v|official audio|lyric video|official lyric|hd|4k|uhd)\b/gi, '')
+      // Remove trailing punctuation / separators left over
+      .replace(/[-–|]+\s*$/g, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+  }
+
+  /**
    * Searches Spotify for a track matching the provided song name and returns
    * the canonical track URL in the format https://open.spotify.com/track/{id}.
    */
@@ -53,9 +69,11 @@ export class SpotifyService {
       const token = await this.getAccessToken();
       if (!token) return null;
 
+      const query = this.cleanQuery(songName);
+
       const res = await axios.get('https://api.spotify.com/v1/search', {
         params: {
-          q: songName,
+          q: query,
           type: 'track',
           limit: 1,
         },
