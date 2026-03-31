@@ -20,7 +20,7 @@ function App() {
   const [searchingSpotifyId, setSearchingSpotifyId] = useState<string | null>(null);
 
   // Settings state
-  const [config, setConfig] = useState<AppConfig>({ audioDir: '', videoDir: '', destDir: '', ollamaModel: 'llama3' });
+  const [config, setConfig] = useState<AppConfig>({ audioDir: '', videoDir: '', destDir: '', downloadDir: '', ollamaModel: 'llama3' });
   const [configSaving, setConfigSaving] = useState(false);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
 
@@ -29,7 +29,7 @@ function App() {
       axios.get(`${API_BASE}/config`),
       axios.get(`${API_BASE}/models`)
     ]).then(([configRes, modelsRes]) => {
-      let loadedConfig = configRes.data.success ? configRes.data.config : { audioDir: '', videoDir: '', destDir: '', ollamaModel: 'llama3' };
+      let loadedConfig = configRes.data.success ? configRes.data.config : { audioDir: '', videoDir: '', destDir: '', downloadDir: '', ollamaModel: 'llama3' };
       
       if (modelsRes.data.success) {
         const models = modelsRes.data.models;
@@ -147,6 +147,29 @@ function App() {
     }
   };
 
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
+
+  const handleDownload = async (fileId: string, url: string, fileType: 'audio'|'video', quality: string, baseName: string) => {
+    try {
+      setDownloadingId(fileId);
+      const res = await axios.post(`${API_BASE}/download`, {
+        url,
+        type: fileType,
+        quality,
+        filename: baseName
+      });
+      if (res.data.success) {
+        setMatchState(res.data.state);
+        alert('Download complete! Item automatically matched.');
+      }
+    } catch (error: any) {
+      console.error('Download failed:', error);
+      alert('Download Failed: ' + (error.response?.data?.error || error.message));
+    } finally {
+      setDownloadingId(null);
+    }
+  };
+
   const [takeoverRunning, setTakeoverRunning] = useState(false);
   const [takeoverProgress, setTakeoverProgress] = useState({ current: 0, total: 0 });
 
@@ -251,6 +274,8 @@ function App() {
                       color="blue" 
                       onYoutubeSearch={() => handleYoutubeSearch(file.id!, file.baseName)} 
                       searchingYoutube={searchingYtId === file.id}
+                      onDownload={(q) => handleDownload(file.id!, file.youtubeUrl!, 'video', q, file.baseName)}
+                      downloading={downloadingId === file.id}
                     />
                   ))}
                 </div>
@@ -293,6 +318,8 @@ function App() {
                       color="purple"
                       onSpotifySearch={() => handleSpotifySearch(file.id!, file.baseName)}
                       searchingSpotify={searchingSpotifyId === file.id}
+                      onDownload={(q) => handleDownload(file.id!, file.spotifyUrl || file.youtubeUrl || '', 'audio', q, file.baseName)}
+                      downloading={downloadingId === file.id}
                     />
                   ))}
                 </div>
@@ -324,6 +351,14 @@ function App() {
                   <label className="text-gray-400 font-medium">Destination Directory</label>
                   <p className="text-xs text-gray-500 mb-2">Base path for organized files (e.g., will create \kpop or \jpop here)</p>
                   <input type="text" value={config.destDir} onChange={e => setConfig({...config, destDir: e.target.value})} className="w-full px-4 py-2 bg-gray-800 border border-gray-700 rounded focus:outline-none focus:ring-1 focus:ring-primary-500 text-gray-200 font-mono text-xs" required />
+                </div>
+
+                <div className="border-t border-gray-800 my-6"></div>
+
+                <div className="space-y-2">
+                  <label className="text-gray-400 font-medium">Download Directory (Optional)</label>
+                  <p className="text-xs text-gray-500 mb-2">Absolute path for downloaded files before categorization</p>
+                  <input type="text" value={config.downloadDir || ''} onChange={e => setConfig({...config, downloadDir: e.target.value})} className="w-full px-4 py-2 bg-gray-800 border border-gray-700 rounded focus:outline-none focus:ring-1 focus:ring-primary-500 text-gray-200 font-mono text-xs" />
                 </div>
 
                 <div className="border-t border-gray-800 my-6"></div>
@@ -369,30 +404,50 @@ function NavItem({ icon, label, active = false, onClick }: { icon: React.ReactNo
   );
 }
 
-function FileCard({ file, color, onYoutubeSearch, searchingYoutube, onSpotifySearch, searchingSpotify }: { file: FileItem, color: 'blue' | 'purple', onYoutubeSearch?: () => void, searchingYoutube?: boolean, onSpotifySearch?: () => void, searchingSpotify?: boolean }) {
+function FileCard({ file, color, onYoutubeSearch, searchingYoutube, onSpotifySearch, searchingSpotify, onDownload, downloading }: { file: FileItem, color: 'blue' | 'purple', onYoutubeSearch?: () => void, searchingYoutube?: boolean, onSpotifySearch?: () => void, searchingSpotify?: boolean, onDownload?: (quality: string) => void, downloading?: boolean }) {
   const Icon = color === 'blue' ? FileAudio : FileVideo;
   const bgColors = color === 'blue' ? 'bg-blue-400/10 text-blue-400 border-blue-400/20' : 'bg-purple-400/10 text-purple-400 border-purple-400/20';
   
+  // Local state for expanded view
+  const isExpanded = !!file.previewUrl || !!file.youtubeUrl || !!file.spotifyUrl;
+  const [quality, setQuality] = useState(color === 'blue' ? '1080' : 'best'); // default
+  const [formats, setFormats] = useState<{videos: number[], audios: string[]} | null>(null);
+  const [loadingFormats, setLoadingFormats] = useState(false);
+
+  useEffect(() => {
+    if (isExpanded && !formats && !loadingFormats) {
+      const url = file.youtubeUrl || file.spotifyUrl;
+      if (url) {
+        setLoadingFormats(true);
+        axios.post(`${API_BASE}/formats`, { url }).then(res => {
+          if (res.data.success) {
+            setFormats({ videos: res.data.videos, audios: res.data.audios });
+            if (color === 'blue' && res.data.videos.length > 0) {
+               setQuality(res.data.videos[0].toString());
+            } else if (color === 'purple' && res.data.audios.length > 0) {
+               if (res.data.audios.includes('m4a')) setQuality('m4a');
+               else setQuality('best');
+            }
+          }
+        }).catch(err => console.error(err))
+          .finally(() => setLoadingFormats(false));
+      }
+    }
+  }, [isExpanded, file.youtubeUrl, file.spotifyUrl]);
+  
   return (
-    <div className={`p-3 rounded-lg border bg-gray-800/40 hover:bg-gray-800 transition ${bgColors} flex justify-between items-center group`}>
-      <div className="flex items-center gap-3 overflow-hidden">
-        <Icon size={18} className="shrink-0" />
-        <div className="truncate text-xs font-medium text-gray-200 leading-tight" title={file.filename}>
-          {file.baseName}
-          <div className="text-[10px] text-gray-500 mt-0.5">{file.extension}</div>
+    <div className={`flex flex-col rounded-lg border bg-gray-800/40 hover:bg-gray-800 transition ${bgColors} group overflow-hidden`}>
+      <div className="p-3 flex justify-between items-center">
+        <div className="flex items-center gap-3 overflow-hidden">
+          <Icon size={18} className="shrink-0" />
+          <div className="truncate text-xs font-medium text-gray-200 leading-tight" title={file.filename}>
+            {file.baseName}
+            <div className="text-[10px] text-gray-500 mt-0.5">{file.extension}</div>
+          </div>
         </div>
-      </div>
-      
-      {color === 'blue' && onYoutubeSearch && (
-        <div className="shrink-0 ml-2">
-          {file.youtubeUrl ? (
-            <button 
-              onClick={() => { navigator.clipboard.writeText(file.youtubeUrl!); alert('Copied YouTube Link to download!'); }}
-              className="px-2 py-1 bg-red-600/20 hover:bg-red-600/40 text-red-500 rounded text-[10px] font-bold border border-red-500/30 transition flex items-center gap-1"
-            >
-              Copy YT Link
-            </button>
-          ) : (
+        
+        {color === 'blue' && onYoutubeSearch && !isExpanded && (
+          <div className="shrink-0 ml-2">
             <button 
               onClick={onYoutubeSearch}
               disabled={searchingYoutube}
@@ -400,20 +455,11 @@ function FileCard({ file, color, onYoutubeSearch, searchingYoutube, onSpotifySea
             >
               {searchingYoutube ? 'Searching...' : 'Find Video'}
             </button>
-          )}
-        </div>
-      )}
+          </div>
+        )}
 
-      {color === 'purple' && onSpotifySearch && (
-        <div className="shrink-0 ml-2">
-          {file.spotifyUrl ? (
-            <button 
-              onClick={() => { navigator.clipboard.writeText(file.spotifyUrl!); alert('Copied Spotify Link!'); }}
-              className="px-2 py-1 bg-green-600/20 hover:bg-green-600/40 text-green-500 rounded text-[10px] font-bold border border-green-500/30 transition flex items-center gap-1"
-            >
-              Copy Spotify
-            </button>
-          ) : (
+        {color === 'purple' && onSpotifySearch && !isExpanded && (
+          <div className="shrink-0 ml-2">
             <button 
               onClick={onSpotifySearch}
               disabled={searchingSpotify}
@@ -421,7 +467,61 @@ function FileCard({ file, color, onYoutubeSearch, searchingYoutube, onSpotifySea
             >
               {searchingSpotify ? 'Searching...' : 'Find Spotify'}
             </button>
+          </div>
+        )}
+      </div>
+
+      {isExpanded && (
+        <div className="px-3 pb-3 pt-1 flex flex-col gap-2 border-t border-gray-700/50 mt-1">
+          {file.previewUrl && (
+            <div className="w-full bg-black/40 rounded overflow-hidden flex items-center justify-center">
+              {color === 'blue' ? (
+                // Video Preview (YouTube Iframe)
+                <iframe 
+                  src={file.previewUrl} 
+                  className="w-full aspect-video" 
+                  frameBorder="0" 
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
+                  allowFullScreen
+                ></iframe>
+              ) : (
+                // Audio Preview (Spotify or raw)
+                <audio controls src={file.previewUrl} className="w-full h-10"></audio>
+              )}
+            </div>
           )}
+          
+          <div className="flex items-center justify-between gap-2 mt-2">
+            <div className="flex flex-col gap-0.5">
+              <span className="text-[10px] text-gray-400 uppercase tracking-widest font-semibold ml-1">Quality</span>
+              <select 
+                value={quality}
+                onChange={(e) => setQuality(e.target.value)}
+                disabled={loadingFormats}
+                className="bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs text-gray-200 outline-none w-28 disabled:opacity-50"
+              >
+                {loadingFormats ? <option>Loading...</option> : color === 'blue' ? (
+                  <>
+                    <option value="best">Best (4K+)</option>
+                    {formats?.videos && formats.videos.map(v => <option key={v} value={v.toString()}>{v}p</option>)}
+                  </>
+                ) : (
+                  <>
+                    <option value="best">Best Audio</option>
+                    {formats?.audios && formats.audios.map(a => <option key={a} value={a}>{a.toUpperCase()}</option>)}
+                  </>
+                )}
+              </select>
+            </div>
+
+            <button
+              onClick={() => onDownload?.(quality)}
+              disabled={downloading}
+              className={`flex-1 flex justify-center items-center py-1.5 px-3 rounded text-xs font-bold transition ${downloading ? 'bg-gray-700 text-gray-400 animate-pulse' : 'bg-primary-600 hover:bg-primary-500 text-white'}`}
+            >
+              {downloading ? 'Downloading...' : 'Accept & Download'}
+            </button>
+          </div>
         </div>
       )}
     </div>

@@ -45,6 +45,7 @@ type SpotifyTrack = {
   name: string;
   artists: { name: string }[];
   external_urls?: { spotify?: string };
+  preview_url?: string;
 };
 
 function scoreTrack(track: SpotifyTrack, query: string): number {
@@ -128,7 +129,7 @@ export class SpotifyService {
    * Fetches the top 5 results and picks the best match using a simple scoring
    * function that rewards exact name matches and artist name presence in the query.
    */
-  public async findTrackUrl(songName: string): Promise<string | null> {
+  public async findTrackUrl(songName: string): Promise<{url: string, previewUrl?: string} | null> {
     try {
       const token = await this.getAccessToken();
       if (!token) return null;
@@ -153,7 +154,10 @@ export class SpotifyService {
         }
       }
 
-      return `https://open.spotify.com/track/${best.id}`;
+      return {
+        url: `https://open.spotify.com/track/${best.id}`,
+        previewUrl: best.preview_url
+      };
     } catch (error) {
       console.error('Spotify search failed:', error);
       return null;

@@ -2,5 +2,6 @@
   "audioDir": "H:\\FLAC Musics\\recheck_folder_1",
   "videoDir": "F:\\Videos\\English",
   "destDir": "D:\\Projects\\musicClassifier\\organized",
-  "ollamaModel": "qwen2.5:14b"
+  "ollamaModel": "qwen2.5:14b",
+  "downloadDir": "F:\\DLs"
 }

@@ -3,6 +3,7 @@ import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
 import dotenv from 'dotenv';
+import youtubedl from 'youtube-dl-exec';
 import { LibraryService } from './services/library';
 import { OllamaService } from './services/ollama';
 import { InternetSearchService } from './services/internet';
@@ -155,17 +156,91 @@ app.post('/api/auto-organize-single', async (req, res) => {
 app.post('/api/youtube/:id', async (req, res) => {
   const fileId = req.params.id;
   const { title } = req.body;
-  const link = await youtube.findOfficialVideoSync(title);
-  if (link) library.updateYoutubeUrl(fileId, link);
-  res.json({ success: !!link, link, state: library.getMatchState() });
+  const result = await youtube.findOfficialVideoSync(title);
+  if (result) library.updateYoutubeUrl(fileId, result.url, result.previewUrl);
+  res.json({ success: !!result, link: result?.url, previewUrl: result?.previewUrl, state: library.getMatchState() });
 });
 
 app.post('/api/spotify/:id', async (req, res) => {
   const fileId = req.params.id;
   const { title } = req.body;
-  const link = await spotify.findTrackUrl(title);
-  if (link) library.updateSpotifyUrl(fileId, link);
-  res.json({ success: !!link, link, state: library.getMatchState() });
+  const result = await spotify.findTrackUrl(title);
+  if (result) library.updateSpotifyUrl(fileId, result.url, result.previewUrl);
+  res.json({ success: !!result, link: result?.url, previewUrl: result?.previewUrl, state: library.getMatchState() });
+});
+
+app.post('/api/download', async (req, res) => {
+  try {
+    const { url, type, quality, filename } = req.body;
+    let targetDir = currentConfig.downloadDir || (type === 'audio' ? currentConfig.audioDir : currentConfig.videoDir);
+    
+    let args: any = {
+      noCheckCertificates: true,
+      noWarnings: true,
+      addHeader: [
+        'referer:youtube.com',
+        'user-agent:Mozilla/5.0'
+      ]
+    };
+
+    if (type === 'audio') {
+      args.extractAudio = true;
+      args.audioFormat = quality === 'best' ? 'best' : quality;
+      args.output = path.join(targetDir, `${filename}.%(ext)s`);
+    } else {
+      if (quality !== 'best' && !isNaN(parseInt(quality))) {
+         args.format = `bestvideo[height<=${quality}][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best`;
+      } else {
+         args.format = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best';
+      }
+      args.mergeOutputFormat = 'mp4';
+      args.output = path.join(targetDir, `${filename}.%(ext)s`);
+    }
+
+    try {
+      await youtubedl(url, args);
+      library.syncDisk();
+      res.json({ success: true, state: library.getMatchState() });
+    } catch (dlErr: any) {
+       console.error("YTDL Error:", dlErr);
+       res.status(500).json({ success: false, error: 'Download failed: ' + dlErr.message });
+    }
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/formats', async (req, res) => {
+  try {
+    const { url } = req.body;
+    if (!url) return res.status(400).json({ success: false, error: 'URL required' });
+
+    const result = await youtubedl(url, {
+      dumpJson: true,
+      noCheckCertificates: true,
+      noWarnings: true
+    }) as any;
+
+    const formats = result.formats || [];
+    
+    // Extract unique mp4 video heights
+    const videoResolutions = Array.from(new Set(
+      formats.filter((f: any) => f.vcodec !== 'none' && f.height && f.ext === 'mp4')
+             .map((f: any) => f.height)
+             .sort((a: any, b: any) => (b as number)-(a as number))
+    ));
+
+    // For audio formats
+    const audioFormats = formats.filter((f: any) => f.acodec !== 'none' && f.vcodec === 'none' && f.abr && f.ext);
+    // Unique extensions for audio, favoring best bitrate
+    const audioTypes = Array.from(new Set(
+      audioFormats.map((f: any) => f.ext)
+    ));
+
+    res.json({ success: true, videos: videoResolutions, audios: audioTypes });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));

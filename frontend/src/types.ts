@@ -2,6 +2,7 @@ export interface AppConfig {
   audioDir: string;
   videoDir: string;
   destDir: string;
+  downloadDir?: string;
   ollamaModel?: string; // New Model field
 }
 
@@ -22,6 +23,7 @@ export interface FileItem {
   spotifyUrl?: string | null;
   albumArt?: string | null;
   isrc?: string | null;
+  previewUrl?: string | null;
 }
 
 export interface OllamaClassification {

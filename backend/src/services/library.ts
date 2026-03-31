@@ -12,6 +12,7 @@ export class LibraryService {
     this.ensureDirectoryExists(this.config.audioDir);
     this.ensureDirectoryExists(this.config.videoDir);
     this.ensureDirectoryExists(this.config.destDir);
+    if (this.config.downloadDir) this.ensureDirectoryExists(this.config.downloadDir);
   }
 
   public setConfig(config: AppConfig) {
@@ -19,6 +20,7 @@ export class LibraryService {
     this.ensureDirectoryExists(this.config.audioDir);
     this.ensureDirectoryExists(this.config.videoDir);
     this.ensureDirectoryExists(this.config.destDir);
+    if (this.config.downloadDir) this.ensureDirectoryExists(this.config.downloadDir);
   }
 
   private ensureDirectoryExists(dir: string) {
@@ -41,10 +43,20 @@ export class LibraryService {
     const audioFiles = fs.readdirSync(this.config.audioDir).filter(f => f.endsWith('.flac'));
     const videoFiles = fs.readdirSync(this.config.videoDir).filter(f => f.endsWith('.mp4') || f.endsWith('.mkv'));
 
+    let dlAudio: string[] = [];
+    let dlVideo: string[] = [];
+    if (this.config.downloadDir && fs.existsSync(this.config.downloadDir)) {
+      const dlFiles = fs.readdirSync(this.config.downloadDir);
+      dlAudio = dlFiles.filter(f => f.endsWith('.flac') || f.endsWith('.m4a') || f.endsWith('.mp3'));
+      dlVideo = dlFiles.filter(f => f.endsWith('.mp4') || f.endsWith('.mkv') || f.endsWith('.webm'));
+    }
+
     // Current files on disk (absolute paths)
     const diskPaths = new Set([
       ...audioFiles.map(f => path.join(this.config.audioDir, f)),
-      ...videoFiles.map(f => path.join(this.config.videoDir, f))
+      ...videoFiles.map(f => path.join(this.config.videoDir, f)),
+      ...dlAudio.map(f => path.join(this.config.downloadDir!, f)),
+      ...dlVideo.map(f => path.join(this.config.downloadDir!, f))
     ]);
 
     // 1. Delete rows that no longer exist on disk
@@ -72,6 +84,10 @@ export class LibraryService {
 
     audioFiles.forEach(f => processFile(this.config.audioDir, f, 'Music'));
     videoFiles.forEach(f => processFile(this.config.videoDir, f, 'Video'));
+    if (this.config.downloadDir) {
+       dlAudio.forEach(f => processFile(this.config.downloadDir!, f, 'Music'));
+       dlVideo.forEach(f => processFile(this.config.downloadDir!, f, 'Video'));
+    }
 
     this.autoBuildExactPairs();
   }
@@ -118,8 +134,8 @@ export class LibraryService {
 
     const matchedPairsRaw = db.prepare(`
       SELECT p.*, 
-             a.filename as a_fn, a.baseName as a_bn, a.extension as a_ext, a.absolutePath as a_abs,
-             v.filename as v_fn, v.baseName as v_bn, v.extension as v_ext, v.absolutePath as v_abs
+             a.filename as a_fn, a.baseName as a_bn, a.extension as a_ext, a.absolutePath as a_abs, a.youtubeUrl as a_yt, a.spotifyUrl as a_sp, a.previewUrl as a_pr,
+             v.filename as v_fn, v.baseName as v_bn, v.extension as v_ext, v.absolutePath as v_abs, v.youtubeUrl as v_yt, v.spotifyUrl as v_sp, v.previewUrl as v_pr
       FROM pairs p
       JOIN files a ON p.audioId = a.id
       JOIN files v ON p.videoId = v.id
@@ -128,20 +144,28 @@ export class LibraryService {
     const matchedPairs: MatchedPair[] = matchedPairsRaw.map(r => ({
       id: r.id,
       status: r.status,
-      audioFile: { id: r.audioId, type: 'Music', filename: r.a_fn, baseName: r.a_bn, extension: r.a_ext, absolutePath: r.a_abs },
-      videoFile: { id: r.videoId, type: 'Video', filename: r.v_fn, baseName: r.v_bn, extension: r.v_ext, absolutePath: r.v_abs },
+      audioFile: { id: r.audioId, type: 'Music', filename: r.a_fn, baseName: r.a_bn, extension: r.a_ext, absolutePath: r.a_abs, youtubeUrl: r.a_yt, spotifyUrl: r.a_sp, previewUrl: r.a_pr },
+      videoFile: { id: r.videoId, type: 'Video', filename: r.v_fn, baseName: r.v_bn, extension: r.v_ext, absolutePath: r.v_abs, youtubeUrl: r.v_yt, spotifyUrl: r.v_sp, previewUrl: r.v_pr },
       aiResult: r.aiCategory ? { verifiedCategory: r.aiCategory, isOfficialVideo: r.isOfficial === 1, cleanName: r.cleanName } : undefined
     }));
 
     return { unmatchedAudio, unmatchedVideo, matchedPairs };
   }
 
-  public updateYoutubeUrl(fileId: string, url: string) {
-    db.prepare('UPDATE files SET youtubeUrl = ? WHERE id = ?').run(url, fileId);
+  public updateYoutubeUrl(fileId: string, url: string, previewUrl?: string) {
+    if (previewUrl) {
+      db.prepare('UPDATE files SET youtubeUrl = ?, previewUrl = ? WHERE id = ?').run(url, previewUrl, fileId);
+    } else {
+      db.prepare('UPDATE files SET youtubeUrl = ? WHERE id = ?').run(url, fileId);
+    }
   }
 
-  public updateSpotifyUrl(fileId: string, url: string) {
-    db.prepare('UPDATE files SET spotifyUrl = ? WHERE id = ?').run(url, fileId);
+  public updateSpotifyUrl(fileId: string, url: string, previewUrl?: string) {
+    if (previewUrl) {
+      db.prepare('UPDATE files SET spotifyUrl = ?, previewUrl = ? WHERE id = ?').run(url, previewUrl, fileId);
+    } else {
+      db.prepare('UPDATE files SET spotifyUrl = ? WHERE id = ?').run(url, fileId);
+    }
   }
 
   public addOllamaMatches(matches: {audioName: string, videoName: string}[]) {
