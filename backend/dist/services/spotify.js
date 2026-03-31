@@ -14,41 +14,99 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.SpotifyService = void 0;
 const axios_1 = __importDefault(require("axios"));
+const crypto_1 = __importDefault(require("crypto"));
+// ─── TOTP (Spotify Web Player anonymous token) ────────────────────────────────
+// Secret / version reverse-engineered by the SpotiFLAC project
+// (https://github.com/afkarxyz/SpotiFLAC) – no Spotify account required.
+const TOTP_SECRET = 'GM3TMMJTGYZTQNZVGM4DINJZHA4TGOBYGMZTCMRTGEYDSMJRHE4TEOBUG4YTCMRUGQ4DQOJUGQYTAMRRGA2TCMJSHE3TCMBY';
+const TOTP_VERSION = 61;
+function base32Decode(b32) {
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+    let bits = 0, value = 0;
+    const output = [];
+    for (const char of b32.toUpperCase().replace(/=+$/, '')) {
+        const idx = alphabet.indexOf(char);
+        if (idx === -1)
+            continue;
+        value = (value << 5) | idx;
+        bits += 5;
+        if (bits >= 8) {
+            output.push((value >>> (bits - 8)) & 0xff);
+            bits -= 8;
+        }
+    }
+    return Buffer.from(output);
+}
+function generateTOTP(secret, step = 30) {
+    const key = base32Decode(secret);
+    const counter = Math.floor(Date.now() / 1000 / step);
+    const buf = Buffer.alloc(8);
+    buf.writeBigInt64BE(BigInt(counter));
+    const hmac = crypto_1.default.createHmac('sha1', key).update(buf).digest();
+    const offset = hmac[hmac.length - 1] & 0xf;
+    const code = ((hmac[offset] & 0x7f) << 24) |
+        (hmac[offset + 1] << 16) |
+        (hmac[offset + 2] << 8) |
+        hmac[offset + 3];
+    return String(code % 1000000).padStart(6, '0');
+}
+function scoreTrack(track, query) {
+    const q = query.toLowerCase();
+    const name = track.name.toLowerCase();
+    let s = 0;
+    if (name === q) {
+        s += 100;
+    }
+    else if (q.includes(name)) {
+        s += 30;
+    }
+    for (const a of track.artists) {
+        if (q.includes(a.name.toLowerCase()))
+            s += 20;
+    }
+    return s;
+}
+// ─── SpotifyService ────────────────────────────────────────────────────────────
 class SpotifyService {
     constructor() {
-        this.accessToken = null;
+        this.cachedToken = null;
         this.tokenExpiry = 0;
     }
-    get clientId() {
-        return process.env.SPOTIFY_CLIENT_ID || '';
-    }
-    get clientSecret() {
-        return process.env.SPOTIFY_CLIENT_SECRET || '';
-    }
+    /**
+     * Fetches an anonymous Spotify Web Player access token using the same
+     * TOTP-based approach as the SpotiFLAC project. No developer credentials needed.
+     */
     getAccessToken() {
         return __awaiter(this, void 0, void 0, function* () {
-            if (this.accessToken && Date.now() < this.tokenExpiry) {
-                return this.accessToken;
-            }
-            if (!this.clientId || !this.clientSecret) {
-                console.error('Spotify credentials not configured. Set SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in your environment.');
-                return null;
+            var _a;
+            if (this.cachedToken && Date.now() < this.tokenExpiry) {
+                return this.cachedToken;
             }
             try {
-                const credentials = Buffer.from(`${this.clientId}:${this.clientSecret}`).toString('base64');
-                const res = yield axios_1.default.post('https://accounts.spotify.com/api/token', new URLSearchParams({ grant_type: 'client_credentials' }).toString(), {
+                const totpCode = generateTOTP(TOTP_SECRET);
+                const url = new URL('https://open.spotify.com/api/token');
+                url.searchParams.set('reason', 'init');
+                url.searchParams.set('productType', 'web-player');
+                url.searchParams.set('totp', totpCode);
+                url.searchParams.set('totpVer', String(TOTP_VERSION));
+                url.searchParams.set('totpServer', totpCode);
+                const res = yield axios_1.default.get(url.toString(), {
                     headers: {
-                        Authorization: `Basic ${credentials}`,
-                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36',
                     },
                 });
-                this.accessToken = res.data.access_token;
-                // Refresh 60 seconds before actual expiry to avoid using a token that expires mid-request
-                this.tokenExpiry = Date.now() + (res.data.expires_in - 60) * 1000;
-                return this.accessToken;
+                const token = (_a = res.data) === null || _a === void 0 ? void 0 : _a.accessToken;
+                if (!token) {
+                    console.error('Spotify anonymous token response had no accessToken field');
+                    return null;
+                }
+                this.cachedToken = token;
+                // Spotify web-player tokens typically expire in ~1 hour; refresh 60 s early
+                this.tokenExpiry = Date.now() + (3600 - 60) * 1000;
+                return token;
             }
             catch (error) {
-                console.error('Failed to get Spotify access token:', error);
+                console.error('Failed to get Spotify anonymous token:', error);
                 return null;
             }
         });
@@ -59,11 +117,8 @@ class SpotifyService {
      */
     cleanQuery(raw) {
         return raw
-            // Remove bracketed/parenthesised noise: [Official], (MV), [4K UHD], etc.
             .replace(/[\[(][^\])]*(official|mv|m\/v|music video|video|hd|4k|uhd|lyric|audio|ver\.?|version|ft\.?|feat\.?)[^\])]*[\])]/gi, '')
-            // Remove standalone suffixes that aren't inside brackets
             .replace(/\b(official music video|official video|music video|official mv|official m\/v|official audio|lyric video|official lyric|hd|4k|uhd)\b/gi, '')
-            // Remove trailing punctuation / separators left over
             .replace(/[-–|]+\s*$/g, '')
             .replace(/\s{2,}/g, ' ')
             .trim();
@@ -71,6 +126,9 @@ class SpotifyService {
     /**
      * Searches Spotify for a track matching the provided song name and returns
      * the canonical track URL in the format https://open.spotify.com/track/{id}.
+     *
+     * Fetches the top 5 results and picks the best match using a simple scoring
+     * function that rewards exact name matches and artist name presence in the query.
      */
     findTrackUrl(songName) {
         return __awaiter(this, void 0, void 0, function* () {
@@ -81,21 +139,22 @@ class SpotifyService {
                     return null;
                 const query = this.cleanQuery(songName);
                 const res = yield axios_1.default.get('https://api.spotify.com/v1/search', {
-                    params: {
-                        q: query,
-                        type: 'track',
-                        limit: 1,
-                    },
-                    headers: {
-                        Authorization: `Bearer ${token}`,
-                    },
+                    params: { q: query, type: 'track', limit: 5 },
+                    headers: { Authorization: `Bearer ${token}` },
                 });
-                const tracks = (_b = (_a = res.data) === null || _a === void 0 ? void 0 : _a.tracks) === null || _b === void 0 ? void 0 : _b.items;
-                if (tracks && tracks.length > 0) {
-                    const trackId = tracks[0].id;
-                    return `https://open.spotify.com/track/${trackId}`;
+                const items = (_b = (_a = res.data) === null || _a === void 0 ? void 0 : _a.tracks) === null || _b === void 0 ? void 0 : _b.items;
+                if (!items || items.length === 0)
+                    return null;
+                let best = items[0];
+                let bestScore = scoreTrack(best, query);
+                for (let i = 1; i < items.length; i++) {
+                    const sc = scoreTrack(items[i], query);
+                    if (sc > bestScore) {
+                        best = items[i];
+                        bestScore = sc;
+                    }
                 }
-                return null;
+                return `https://open.spotify.com/track/${best.id}`;
             }
             catch (error) {
                 console.error('Spotify search failed:', error);

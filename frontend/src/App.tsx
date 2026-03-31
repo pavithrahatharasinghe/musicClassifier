@@ -384,7 +384,7 @@ function FileCard({ file, color, onYoutubeSearch, searchingYoutube, onSpotifySea
       </div>
       
       {color === 'blue' && onYoutubeSearch && (
-        <div className="shrink-0 ml-2 flex flex-col gap-1 items-end">
+        <div className="shrink-0 ml-2">
           {file.youtubeUrl ? (
             <button 
               onClick={() => { navigator.clipboard.writeText(file.youtubeUrl!); alert('Copied YouTube Link to download!'); }}
