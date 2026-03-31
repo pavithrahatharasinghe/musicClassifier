@@ -17,6 +17,7 @@ function App() {
   const [automatching, setAutomatching] = useState(false);
   const [analyzingId, setAnalyzingId] = useState<string | null>(null);
   const [searchingYtId, setSearchingYtId] = useState<string | null>(null);
+  const [searchingSpotifyId, setSearchingSpotifyId] = useState<string | null>(null);
 
   // Settings state
   const [config, setConfig] = useState<AppConfig>({ audioDir: '', videoDir: '', destDir: '', ollamaModel: 'llama3' });
@@ -130,6 +131,22 @@ function App() {
     }
   };
 
+  const handleSpotifySearch = async (fileId: string, baseName: string) => {
+    try {
+      setSearchingSpotifyId(fileId);
+      const res = await axios.post(`${API_BASE}/spotify/${fileId}`, { title: baseName });
+      if (res.data.success) {
+        setMatchState(res.data.state);
+      } else {
+        alert('No Spotify track found for this song.');
+      }
+    } catch (error: any) {
+      console.error('Spotify search failed:', error);
+    } finally {
+      setSearchingSpotifyId(null);
+    }
+  };
+
   const [takeoverRunning, setTakeoverRunning] = useState(false);
   const [takeoverProgress, setTakeoverProgress] = useState({ current: 0, total: 0 });
 
@@ -233,7 +250,9 @@ function App() {
                       file={file} 
                       color="blue" 
                       onYoutubeSearch={() => handleYoutubeSearch(file.id!, file.baseName)} 
-                      searchingYoutube={searchingYtId === file.id} 
+                      searchingYoutube={searchingYtId === file.id}
+                      onSpotifySearch={() => handleSpotifySearch(file.id!, file.baseName)}
+                      searchingSpotify={searchingSpotifyId === file.id}
                     />
                   ))}
                 </div>
@@ -346,7 +365,7 @@ function NavItem({ icon, label, active = false, onClick }: { icon: React.ReactNo
   );
 }
 
-function FileCard({ file, color, onYoutubeSearch, searchingYoutube }: { file: FileItem, color: 'blue' | 'purple', onYoutubeSearch?: () => void, searchingYoutube?: boolean }) {
+function FileCard({ file, color, onYoutubeSearch, searchingYoutube, onSpotifySearch, searchingSpotify }: { file: FileItem, color: 'blue' | 'purple', onYoutubeSearch?: () => void, searchingYoutube?: boolean, onSpotifySearch?: () => void, searchingSpotify?: boolean }) {
   const Icon = color === 'blue' ? FileAudio : FileVideo;
   const bgColors = color === 'blue' ? 'bg-blue-400/10 text-blue-400 border-blue-400/20' : 'bg-purple-400/10 text-purple-400 border-purple-400/20';
   
@@ -360,23 +379,43 @@ function FileCard({ file, color, onYoutubeSearch, searchingYoutube }: { file: Fi
         </div>
       </div>
       
-      {color === 'blue' && onYoutubeSearch && (
-        <div className="shrink-0 ml-2">
-          {file.youtubeUrl ? (
-            <button 
-              onClick={() => { navigator.clipboard.writeText(file.youtubeUrl!); alert('Copied YouTube Link to download!'); }}
-              className="px-2 py-1 bg-red-600/20 hover:bg-red-600/40 text-red-500 rounded text-[10px] font-bold border border-red-500/30 transition flex items-center gap-1"
-            >
-              Copy YT Link
-            </button>
-          ) : (
-            <button 
-              onClick={onYoutubeSearch}
-              disabled={searchingYoutube}
-              className="px-2 py-1 bg-gray-800 border border-gray-700 hover:border-gray-500 text-gray-400 rounded text-[10px] font-medium transition opacity-0 group-hover:opacity-100 disabled:opacity-50"
-            >
-              {searchingYoutube ? 'Searching...' : 'Find Video'}
-            </button>
+      {color === 'blue' && (onYoutubeSearch || onSpotifySearch) && (
+        <div className="shrink-0 ml-2 flex flex-col gap-1 items-end">
+          {onYoutubeSearch && (
+            file.youtubeUrl ? (
+              <button 
+                onClick={() => { navigator.clipboard.writeText(file.youtubeUrl!); alert('Copied YouTube Link to download!'); }}
+                className="px-2 py-1 bg-red-600/20 hover:bg-red-600/40 text-red-500 rounded text-[10px] font-bold border border-red-500/30 transition flex items-center gap-1"
+              >
+                Copy YT Link
+              </button>
+            ) : (
+              <button 
+                onClick={onYoutubeSearch}
+                disabled={searchingYoutube}
+                className="px-2 py-1 bg-gray-800 border border-gray-700 hover:border-gray-500 text-gray-400 rounded text-[10px] font-medium transition opacity-0 group-hover:opacity-100 disabled:opacity-50"
+              >
+                {searchingYoutube ? 'Searching...' : 'Find Video'}
+              </button>
+            )
+          )}
+          {onSpotifySearch && (
+            file.spotifyUrl ? (
+              <button 
+                onClick={() => { navigator.clipboard.writeText(file.spotifyUrl!); alert('Copied Spotify Link!'); }}
+                className="px-2 py-1 bg-green-600/20 hover:bg-green-600/40 text-green-500 rounded text-[10px] font-bold border border-green-500/30 transition flex items-center gap-1"
+              >
+                Copy Spotify
+              </button>
+            ) : (
+              <button 
+                onClick={onSpotifySearch}
+                disabled={searchingSpotify}
+                className="px-2 py-1 bg-gray-800 border border-gray-700 hover:border-gray-500 text-gray-400 rounded text-[10px] font-medium transition opacity-0 group-hover:opacity-100 disabled:opacity-50"
+              >
+                {searchingSpotify ? 'Searching...' : 'Find Spotify'}
+              </button>
+            )
           )}
         </div>
       )}

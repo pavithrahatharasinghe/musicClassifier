@@ -16,10 +16,13 @@ const express_1 = __importDefault(require("express"));
 const cors_1 = __importDefault(require("cors"));
 const path_1 = __importDefault(require("path"));
 const fs_1 = __importDefault(require("fs"));
+const dotenv_1 = __importDefault(require("dotenv"));
 const library_1 = require("./services/library");
 const ollama_1 = require("./services/ollama");
 const internet_1 = require("./services/internet");
 const youtube_1 = require("./services/youtube");
+const spotify_1 = require("./services/spotify");
+dotenv_1.default.config();
 const app = (0, express_1.default)();
 const PORT = process.env.PORT || 3001;
 app.use((0, cors_1.default)());
@@ -50,6 +53,7 @@ const library = new library_1.LibraryService(currentConfig);
 const ollama = new ollama_1.OllamaService();
 const internet = new internet_1.InternetSearchService();
 const youtube = new youtube_1.YouTubeService();
+const spotify = new spotify_1.SpotifyService();
 // Config routes
 app.get('/api/config', (req, res) => res.json({ success: true, config: currentConfig }));
 app.post('/api/config', (req, res) => {
@@ -154,6 +158,14 @@ app.post('/api/youtube/:id', (req, res) => __awaiter(void 0, void 0, void 0, fun
     const link = yield youtube.findOfficialVideoSync(title);
     if (link)
         library.updateYoutubeUrl(fileId, link);
+    res.json({ success: !!link, link, state: library.getMatchState() });
+}));
+app.post('/api/spotify/:id', (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    const fileId = req.params.id;
+    const { title } = req.body;
+    const link = yield spotify.findTrackUrl(title);
+    if (link)
+        library.updateSpotifyUrl(fileId, link);
     res.json({ success: !!link, link, state: library.getMatchState() });
 }));
 app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));

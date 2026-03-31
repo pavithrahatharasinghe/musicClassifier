@@ -2,11 +2,15 @@ import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
+import dotenv from 'dotenv';
 import { LibraryService } from './services/library';
 import { OllamaService } from './services/ollama';
 import { InternetSearchService } from './services/internet';
 import { YouTubeService } from './services/youtube';
+import { SpotifyService } from './services/spotify';
 import { AppConfig } from './types';
+
+dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -42,6 +46,7 @@ const library = new LibraryService(currentConfig);
 const ollama = new OllamaService();
 const internet = new InternetSearchService();
 const youtube = new YouTubeService();
+const spotify = new SpotifyService();
 
 // Config routes
 app.get('/api/config', (req, res) => res.json({ success: true, config: currentConfig }));
@@ -152,6 +157,14 @@ app.post('/api/youtube/:id', async (req, res) => {
   const { title } = req.body;
   const link = await youtube.findOfficialVideoSync(title);
   if (link) library.updateYoutubeUrl(fileId, link);
+  res.json({ success: !!link, link, state: library.getMatchState() });
+});
+
+app.post('/api/spotify/:id', async (req, res) => {
+  const fileId = req.params.id;
+  const { title } = req.body;
+  const link = await spotify.findTrackUrl(title);
+  if (link) library.updateSpotifyUrl(fileId, link);
   res.json({ success: !!link, link, state: library.getMatchState() });
 });
 

@@ -140,6 +140,10 @@ export class LibraryService {
     db.prepare('UPDATE files SET youtubeUrl = ? WHERE id = ?').run(url, fileId);
   }
 
+  public updateSpotifyUrl(fileId: string, url: string) {
+    db.prepare('UPDATE files SET spotifyUrl = ? WHERE id = ?').run(url, fileId);
+  }
+
   public addOllamaMatches(matches: {audioName: string, videoName: string}[]) {
     const insertPair = db.prepare(`
       INSERT OR IGNORE INTO pairs (id, audioId, videoId, status)
