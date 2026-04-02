@@ -90,6 +90,7 @@ export class LibraryService {
     }
 
     this.autoBuildExactPairs();
+    this.autoBuildFuzzyPairs();
   }
 
   /**
@@ -117,6 +118,67 @@ export class LibraryService {
       if (matchingVideo) {
         const pairId = `exact-${audio.id}`;
         insertPair.run(pairId, audio.id, matchingVideo.id);
+      }
+    }
+  }
+
+  /**
+   * Automatically pairs tracks probabilistically by comparing word tokens.
+   */
+  private autoBuildFuzzyPairs() {
+    const unassignedAudio = db.prepare(`
+      SELECT f.* FROM files f
+      LEFT JOIN pairs p ON f.id = p.audioId
+      WHERE p.id IS NULL AND f.type = 'Music'
+    `).all() as any[];
+
+    const unassignedVideo = db.prepare(`
+      SELECT f.* FROM files f
+      LEFT JOIN pairs p ON f.id = p.videoId
+      WHERE p.id IS NULL AND f.type = 'Video'
+    `).all() as any[];
+
+    const insertPair = db.prepare(`
+      INSERT OR IGNORE INTO pairs (id, audioId, videoId, status)
+      VALUES (?, ?, ?, 'fuzzy')
+    `);
+
+    // Extracts normalized alphabetical words > 1 character, handles korean logic as well
+    const getTokens = (str: string) => (str || '').toLowerCase().replace(/[^a-z0-9\s가-힣]/g, ' ').split(/\s+/).filter(w => w.length > 1);
+
+    const availableVideos = [...unassignedVideo];
+
+    for (const audio of unassignedAudio) {
+      const aTokens = getTokens(audio.baseName);
+      if (aTokens.length === 0) continue;
+
+      let bestScore = 0;
+      let bestVideo = null;
+      let bestIdx = -1;
+
+      for (let i = 0; i < availableVideos.length; i++) {
+         const video = availableVideos[i];
+         const vTokens = getTokens(video.baseName);
+         if (vTokens.length === 0) continue;
+
+         let matches = 0;
+         for (const t of aTokens) {
+           if (vTokens.includes(t)) matches++;
+         }
+         
+         // Using division on audio's string length guarantees we mandate 70% of the AUDIO's title exists in the VIDEO's title!
+         const score = matches / aTokens.length;
+         if (score > bestScore) {
+           bestScore = score;
+           bestVideo = video;
+           bestIdx = i;
+         }
+      }
+
+      // If at least 70% of the track's words appear in the video file
+      if (bestScore >= 0.7 && bestVideo) {
+         insertPair.run(`fuzzy-${audio.id}`, audio.id, bestVideo.id);
+         availableVideos.splice(bestIdx, 1); // remove internally to avoid double-binding
       }
     }
   }
@@ -212,21 +274,17 @@ export class LibraryService {
 
     if (!pair) return false;
 
-    // Build the new v4 subfolder paths e.g., /organized/English/flac/ and /organized/English/video/
-    let baseDest = path.join(this.config.destDir, category);
+    // Use has video topology
+    let baseDest = path.join(this.config.destDir, category, 'has video');
     if (isOfficialVideo) {
-      baseDest = path.join(baseDest, 'Official Videos');
+      baseDest = path.join(this.config.destDir, category, 'has video (Official)');
     }
     
-    const audioDestFolder = path.join(baseDest, 'flac');
-    const videoDestFolder = path.join(baseDest, 'video');
-
-    this.ensureDirectoryExists(audioDestFolder);
-    this.ensureDirectoryExists(videoDestFolder);
+    this.ensureDirectoryExists(baseDest);
 
     try {
-      this.moveFileSafely(pair.a_src, path.join(audioDestFolder, pair.a_fn));
-      this.moveFileSafely(pair.v_src, path.join(videoDestFolder, pair.v_fn));
+      this.moveFileSafely(pair.a_src, path.join(baseDest, pair.a_fn));
+      this.moveFileSafely(pair.v_src, path.join(baseDest, pair.v_fn));
 
       db.prepare('DELETE FROM pairs WHERE id = ?').run(pairId);
       db.prepare('DELETE FROM files WHERE id = ? OR id = ?').run(pair.audioId, pair.videoId);
@@ -234,6 +292,23 @@ export class LibraryService {
     } catch (error) {
       console.error('Error physically moving file:', error);
       return false;
+    }
+  }
+
+  public aiMoveAudioOnly(audioId: string, category: string): boolean {
+    const audio = db.prepare(`SELECT absolutePath, filename FROM files WHERE id = ? AND type = 'Music'`).get(audioId) as any;
+    if (!audio) return false;
+
+    let baseDest = path.join(this.config.destDir, category, 'no video');
+    this.ensureDirectoryExists(baseDest);
+
+    try {
+      this.moveFileSafely(audio.absolutePath, path.join(baseDest, audio.filename));
+      db.prepare('DELETE FROM files WHERE id = ?').run(audioId);
+      return true;
+    } catch (error) {
+       console.error('Error physically moving audio only file:', error);
+       return false;
     }
   }
 }

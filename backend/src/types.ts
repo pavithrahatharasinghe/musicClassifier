@@ -44,7 +44,7 @@ export interface AITakeoverResult {
   cleanName: string;
 }
 
-export type MatchStatus = 'exact' | 'ollama' | 'manual';
+export type MatchStatus = 'exact' | 'ollama' | 'manual' | 'fuzzy' | 'downloaded';
 
 export interface MatchedPair {
   id: string; // unique identifier (often db id)

@@ -87,9 +87,9 @@ function App() {
     }
   };
 
-  const handleUnlink = async (audioBaseName: string) => {
+  const handleUnlink = async (pairId: string) => {
     try {
-      const res = await axios.post(`${API_BASE}/unlink`, { audioBaseName });
+      const res = await axios.post(`${API_BASE}/unlink`, { pairId });
       if (res.data.success) setMatchState(res.data.state);
     } catch (error) {
       console.error('Failed to unlink:', error);
@@ -148,6 +148,26 @@ function App() {
   };
 
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  
+  const [selectedAudioIds, setSelectedAudioIds] = useState<string[]>([]);
+  const [organizingAudio, setOrganizingAudio] = useState(false);
+
+  const handleOrganizeAudioOnly = async () => {
+    if (selectedAudioIds.length === 0) return;
+    setOrganizingAudio(true);
+    try {
+      const res = await axios.post(`${API_BASE}/auto-organize-audio-only`, { fileIds: selectedAudioIds });
+      if (res.data.success) {
+         setMatchState(res.data.state);
+         setSelectedAudioIds([]);
+      }
+    } catch (e: any) {
+       console.error(e);
+       alert("Failed formatting audio: " + (e.response?.data?.error || e.message));
+    } finally {
+       setOrganizingAudio(false);
+    }
+  };
 
   const handleDownload = async (fileId: string, url: string, fileType: 'audio'|'video', quality: string, baseName: string) => {
     try {
@@ -260,9 +280,20 @@ function App() {
               
               {/* Unmatched Audio */}
               <div className="flex flex-col bg-gray-900 border border-gray-800 rounded-xl overflow-hidden shadow-sm">
-                <div className="px-5 py-4 border-b border-gray-800 bg-gray-800/20 flex justify-between items-center">
-                  <h3 className="font-semibold text-gray-200 flex items-center gap-2"><FileAudio size={16} className="text-blue-400"/> Unmatched Audio</h3>
-                  <span className="bg-gray-800 text-gray-400 text-xs px-2 py-0.5 rounded-full font-medium">{matchState.unmatchedAudio.length}</span>
+                <div className="px-5 py-4 border-b border-gray-800 bg-gray-800/20 flex flex-col gap-3">
+                  <div className="flex justify-between items-center">
+                    <h3 className="font-semibold text-gray-200 flex items-center gap-2"><FileAudio size={16} className="text-blue-400"/> Unmatched Audio</h3>
+                    <span className="bg-gray-800 text-gray-400 text-xs px-2 py-0.5 rounded-full font-medium">{matchState.unmatchedAudio.length}</span>
+                  </div>
+                  {selectedAudioIds.length > 0 && (
+                    <button 
+                      onClick={handleOrganizeAudioOnly} 
+                      disabled={organizingAudio}
+                      className="w-full py-2 bg-indigo-600/20 text-indigo-400 border border-indigo-500/30 hover:bg-indigo-600/40 rounded text-[11px] font-bold uppercase tracking-wider transition disabled:opacity-50"
+                    >
+                      {organizingAudio ? 'Processing...' : `Organize ${selectedAudioIds.length} as Audio Only`}
+                    </button>
+                  )}
                 </div>
                 <div className="flex-1 overflow-y-auto p-4 space-y-3">
                   {matchState.unmatchedAudio.length === 0 ? (
@@ -276,6 +307,10 @@ function App() {
                       searchingYoutube={searchingYtId === file.id}
                       onDownload={(q) => handleDownload(file.id!, file.youtubeUrl!, 'video', q, file.baseName)}
                       downloading={downloadingId === file.id}
+                      selected={selectedAudioIds.includes(file.id!)}
+                      onToggleSelect={() => {
+                        setSelectedAudioIds(prev => prev.includes(file.id!) ? prev.filter(id => id !== file.id!) : [...prev, file.id!]);
+                      }}
                     />
                   ))}
                 </div>
@@ -294,7 +329,7 @@ function App() {
                     <MatchedPairCard 
                       key={pair.id} 
                       pair={pair} 
-                      onUnlink={() => handleUnlink(pair.audioFile.baseName)} 
+                      onUnlink={() => handleUnlink(pair.id)} 
                       onAnalyze={() => handleAnalyze(pair.id, pair.audioFile.filename)}
                       analyzing={analyzingId === pair.id}
                     />
@@ -404,7 +439,7 @@ function NavItem({ icon, label, active = false, onClick }: { icon: React.ReactNo
   );
 }
 
-function FileCard({ file, color, onYoutubeSearch, searchingYoutube, onSpotifySearch, searchingSpotify, onDownload, downloading }: { file: FileItem, color: 'blue' | 'purple', onYoutubeSearch?: () => void, searchingYoutube?: boolean, onSpotifySearch?: () => void, searchingSpotify?: boolean, onDownload?: (quality: string) => void, downloading?: boolean }) {
+function FileCard({ file, color, onYoutubeSearch, searchingYoutube, onSpotifySearch, searchingSpotify, onDownload, downloading, selected, onToggleSelect }: { file: FileItem, color: 'blue' | 'purple', onYoutubeSearch?: () => void, searchingYoutube?: boolean, onSpotifySearch?: () => void, searchingSpotify?: boolean, onDownload?: (quality: string) => void, downloading?: boolean, selected?: boolean, onToggleSelect?: () => void }) {
   const Icon = color === 'blue' ? FileAudio : FileVideo;
   const bgColors = color === 'blue' ? 'bg-blue-400/10 text-blue-400 border-blue-400/20' : 'bg-purple-400/10 text-purple-400 border-purple-400/20';
   
@@ -436,9 +471,17 @@ function FileCard({ file, color, onYoutubeSearch, searchingYoutube, onSpotifySea
   }, [isExpanded, file.youtubeUrl, file.spotifyUrl]);
   
   return (
-    <div className={`flex flex-col rounded-lg border bg-gray-800/40 hover:bg-gray-800 transition ${bgColors} group overflow-hidden`}>
+    <div className={`flex flex-col rounded-lg border hover:bg-gray-800 transition group overflow-hidden ${selected ? 'bg-gray-800 border-indigo-500 shadow-[0_0_10px_rgba(99,102,241,0.2)]' : `bg-gray-800/40 ${bgColors}`}`}>
       <div className="p-3 flex justify-between items-center">
         <div className="flex items-center gap-3 overflow-hidden">
+          {onToggleSelect && (
+            <input 
+              type="checkbox" 
+              checked={selected} 
+              onChange={onToggleSelect} 
+              className="mt-0.5 rounded border-gray-600 bg-gray-900 text-indigo-600 focus:ring-indigo-500 shrink-0"
+            />
+          )}
           <Icon size={18} className="shrink-0" />
           <div className="truncate text-xs font-medium text-gray-200 leading-tight" title={file.filename}>
             {file.baseName}
@@ -539,11 +582,20 @@ function MatchedPairCard({ pair, onUnlink, onAnalyze, analyzing }: { pair: Match
         </div>
         
         {/* Linker visual */}
-        <div className="px-3 flex items-center justify-center bg-gray-900/50 shrink-0">
+        <div className="px-3 flex flex-col items-center justify-center bg-gray-900/50 shrink-0 gap-1">
           {pair.status === 'exact' ? (
              <span className="text-[10px] font-bold text-emerald-500 uppercase tracking-wider">Exact Match</span>
+          ) : pair.status === 'fuzzy' || pair.status === 'downloaded' ? (
+             <span className="text-[10px] font-bold text-blue-400 uppercase tracking-wider flex items-center gap-1">Auto-Linked</span>
           ) : (
-             <span className="text-[10px] font-bold text-primary-400 uppercase tracking-wider flex items-center gap-1"><Wand2 size={10}/> Ollama</span>
+             <span className="text-[10px] font-bold text-purple-400 uppercase tracking-wider flex items-center gap-1"><Wand2 size={10}/> Ollama</span>
+          )}
+
+          {/* Prominent Label */}
+          {pair.aiResult && (
+             <span className="px-2 py-0.5 mt-1 bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 rounded text-[10px] font-bold uppercase tracking-wider shadow-[0_0_10px_rgba(99,102,241,0.2)]">
+               {pair.aiResult.verifiedCategory}
+             </span>
           )}
         </div>
 

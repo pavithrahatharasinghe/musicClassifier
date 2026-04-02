@@ -9,6 +9,7 @@ import { OllamaService } from './services/ollama';
 import { InternetSearchService } from './services/internet';
 import { YouTubeService } from './services/youtube';
 import { SpotifyService } from './services/spotify';
+import { db } from './db';
 import { AppConfig } from './types';
 
 dotenv.config();
@@ -100,9 +101,9 @@ app.post('/api/automatch', async (req, res) => {
 });
 
 app.post('/api/unlink', (req, res) => {
-  const { audioBaseName } = req.body;
-  if (!audioBaseName) return res.status(400).json({ success: false, error: 'audioBaseName required' });
-  library.removeMatch(audioBaseName);
+  const { pairId } = req.body;
+  if (!pairId) return res.status(400).json({ success: false, error: 'pairId required' });
+  library.removeMatch(pairId);
   res.json({ success: true, state: library.getMatchState() });
 });
 
@@ -153,6 +154,33 @@ app.post('/api/auto-organize-single', async (req, res) => {
   }
 });
 
+// POST /api/auto-organize-audio-only
+app.post('/api/auto-organize-audio-only', async (req, res) => {
+  const { fileIds } = req.body;
+  if (!fileIds || !Array.isArray(fileIds)) return res.status(400).json({ success: false, error: 'fileIds array required' });
+
+  try {
+    const model = currentConfig.ollamaModel || 'llama3';
+    
+    const filesStmt = db.prepare(`SELECT id, filename FROM files WHERE type = 'Music' AND id IN (${fileIds.map(() => '?').join(',')})`);
+    const files = filesStmt.all(...fileIds) as any[];
+
+    for (const file of files) {
+      const cleanName = await ollama.cleanQuery(file.filename, model);
+      const internetData = await internet.searchTrack(cleanName);
+      const aiResult = await ollama.categorize(file.filename, internetData, model);
+
+      if (aiResult && aiResult.verifiedCategory) {
+         library.aiMoveAudioOnly(file.id, aiResult.verifiedCategory);
+      }
+    }
+
+    res.json({ success: true, state: library.getMatchState() });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 app.post('/api/youtube/:id', async (req, res) => {
   const fileId = req.params.id;
   const { title } = req.body;
@@ -186,7 +214,7 @@ app.post('/api/download', async (req, res) => {
     if (type === 'audio') {
       args.extractAudio = true;
       args.audioFormat = quality === 'best' ? 'best' : quality;
-      args.output = path.join(targetDir, `${filename}.%(ext)s`);
+      args.output = path.join(targetDir, `%(title)s.%(ext)s`);
     } else {
       if (quality !== 'best' && !isNaN(parseInt(quality))) {
          args.format = `bestvideo[height<=${quality}][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best`;
@@ -194,12 +222,55 @@ app.post('/api/download', async (req, res) => {
          args.format = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best';
       }
       args.mergeOutputFormat = 'mp4';
-      args.output = path.join(targetDir, `${filename}.%(ext)s`);
+      args.output = path.join(targetDir, `%(title)s.%(ext)s`);
     }
 
     try {
-      await youtubedl(url, args);
+      // If we are downloading a video, we want to capture the output path
+      // yt-dlp returns the path internally when we execute it
+      const dlResult = await youtubedl(url, { ...args, dumpJson: true });
+      // Execute the actual download
+      args.noSimulate = true;
+      const subprocess = youtubedl.exec(url, args);
+      let outPath = '';
+      
+      // Wait for it to finish and extract the destination
+      await new Promise((resolve, reject) => {
+         let stdout = '';
+         subprocess.stdout?.on('data', (d) => stdout += d.toString());
+         subprocess.on('close', (code) => {
+           if (code === 0) {
+              const matches = stdout.match(/Destination: (.*)$/m);
+              const mergeMatch = stdout.match(/Merging formats into "(.*)"/m);
+              if (mergeMatch && mergeMatch[1]) outPath = mergeMatch[1];
+              else if (matches && matches[1]) outPath = matches[1];
+              resolve(true);
+           } else {
+              reject(new Error(`yt-dlp exited with code ${code}`));
+           }
+         });
+         subprocess.on('error', reject);
+      });
+
       library.syncDisk();
+
+      // Explicitly link if we requested a video for an audio baseName
+      if (type === 'video' && filename && outPath) {
+         const audio = db.prepare("SELECT id FROM files WHERE baseName = ? AND type = 'Music'").get(filename) as any;
+         if (audio) {
+            // Find the video id using the basename of the outPath
+            const ext = path.extname(outPath);
+            const dlBaseName = path.basename(outPath, ext);
+            
+            // Wait, syncDisk might have indexed it. Let's find it by absolutePath or baseName.
+            const absPath = path.resolve(outPath); // Ensure absolute
+            const video = db.prepare("SELECT id FROM files WHERE absolutePath = ? OR baseName = ?").get(absPath, dlBaseName) as any;
+            if (video) {
+               db.prepare("INSERT OR IGNORE INTO pairs (id, audioId, videoId, status) VALUES (?, ?, ?, 'downloaded')").run(`dl-${audio.id}`, audio.id, video.id);
+            }
+         }
+      }
+
       res.json({ success: true, state: library.getMatchState() });
     } catch (dlErr: any) {
        console.error("YTDL Error:", dlErr);
