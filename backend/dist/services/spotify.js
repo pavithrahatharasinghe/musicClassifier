@@ -154,7 +154,10 @@ class SpotifyService {
                         bestScore = sc;
                     }
                 }
-                return `https://open.spotify.com/track/${best.id}`;
+                return {
+                    url: `https://open.spotify.com/track/${best.id}`,
+                    previewUrl: best.preview_url
+                };
             }
             catch (error) {
                 console.error('Spotify search failed:', error);

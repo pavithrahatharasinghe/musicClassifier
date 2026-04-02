@@ -61,19 +61,33 @@ class OllamaService {
                     stream: false
                 });
                 const responseText = response.data.response;
-                try {
-                    const result = JSON.parse(responseText.trim());
+                const parseMatches = (text) => {
+                    const result = JSON.parse(text);
                     if (result && Array.isArray(result.matches)) {
-                        return result.matches;
+                        const finalPairs = [];
+                        for (const m of result.matches) {
+                            const clean = (str) => (str || '').replace(/['"]/g, '').toLowerCase().trim();
+                            const originalAudio = audioFiles.find(a => clean(a.baseName) === clean(m.audioName));
+                            const originalVideo = videoFiles.find(v => clean(v.baseName) === clean(m.videoName));
+                            if (originalAudio && originalVideo) {
+                                finalPairs.push({
+                                    audioName: originalAudio.baseName,
+                                    videoName: originalVideo.baseName
+                                });
+                            }
+                        }
+                        return finalPairs;
                     }
                     return [];
+                };
+                try {
+                    return parseMatches(responseText.trim());
                 }
                 catch (parseError) {
                     // Fallback regex if format:json misbehaves
                     const jsonMatch = responseText.match(/\{[\s\S]*\}/);
                     if (jsonMatch) {
-                        const result = JSON.parse(jsonMatch[0]);
-                        return result.matches || [];
+                        return parseMatches(jsonMatch[0]);
                     }
                     throw new Error("Ollama returned malformed JSON: " + responseText);
                 }

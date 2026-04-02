@@ -49,4 +49,12 @@ try {
   // column likely exists
 }
 
+// Migration for adding videoStatus if missing
+try {
+  db.exec("ALTER TABLE files ADD COLUMN videoStatus TEXT;");
+  console.log('✅ SQLite Migration: added videoStatus column');
+} catch (e) {
+  // column likely exists
+}
+
 console.log('✅ SQLite Database Initialized');

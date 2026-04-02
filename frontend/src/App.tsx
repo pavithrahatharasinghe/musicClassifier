@@ -3,7 +3,7 @@ import axios from 'axios';
 import { 
   FileAudio, FileVideo, Wand2, 
   Music, Settings, LayoutDashboard, Save,
-  Unlink, CheckCircle2, HelpCircle
+  Unlink, CheckCircle2, HelpCircle, Video, VideoOff, Send
 } from 'lucide-react';
 import type { MatchMakerState, AppConfig, FileItem, MatchedPair } from './types';
 
@@ -20,7 +20,7 @@ function App() {
   const [searchingSpotifyId, setSearchingSpotifyId] = useState<string | null>(null);
 
   // Settings state
-  const [config, setConfig] = useState<AppConfig>({ audioDir: '', videoDir: '', destDir: '', downloadDir: '', ollamaModel: 'llama3' });
+  const [config, setConfig] = useState<AppConfig>({ audioDir: '', videoDir: '', destDir: '', downloadDir: '', ollamaModel: 'llama3', videoValidationEnabled: false, noVideoDestDir: '' });
   const [configSaving, setConfigSaving] = useState(false);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
 
@@ -226,6 +226,40 @@ function App() {
     setTakeoverRunning(false);
   };
 
+  const [checkingVideoId, setCheckingVideoId] = useState<string | null>(null);
+  const [sendingNoVideoId, setSendingNoVideoId] = useState<string | null>(null);
+
+  const handleCheckVideoRelease = async (fileId: string, baseName: string) => {
+    try {
+      setCheckingVideoId(fileId);
+      const res = await axios.post(`${API_BASE}/check-video-release/${fileId}`, { title: baseName });
+      if (res.data.success) {
+        setMatchState(res.data.state);
+      }
+    } catch (error: any) {
+      console.error('Video release check failed:', error);
+      alert('Video check failed: ' + (error.response?.data?.error || error.message));
+    } finally {
+      setCheckingVideoId(null);
+    }
+  };
+
+  const handleSendNoVideo = async (fileId: string, filename: string, baseName: string) => {
+    if (!window.confirm(`Send "${baseName}" to the no-video destination?`)) return;
+    try {
+      setSendingNoVideoId(fileId);
+      const res = await axios.post(`${API_BASE}/send-no-video`, { fileId, filename });
+      if (res.data.success) {
+        setMatchState(res.data.state);
+      }
+    } catch (error: any) {
+      console.error('Send no-video failed:', error);
+      alert('Failed to send: ' + (error.response?.data?.error || error.message));
+    } finally {
+      setSendingNoVideoId(null);
+    }
+  };
+
   return (
     <div className="flex h-screen bg-gray-900 text-gray-200">
       <aside className="w-64 border-r border-gray-800 bg-gray-900 flex flex-col hidden md:flex shrink-0">
@@ -311,6 +345,11 @@ function App() {
                       onToggleSelect={() => {
                         setSelectedAudioIds(prev => prev.includes(file.id!) ? prev.filter(id => id !== file.id!) : [...prev, file.id!]);
                       }}
+                      videoValidationEnabled={config.videoValidationEnabled}
+                      onCheckVideoRelease={() => handleCheckVideoRelease(file.id!, file.baseName)}
+                      checkingVideo={checkingVideoId === file.id}
+                      onSendNoVideo={() => handleSendNoVideo(file.id!, file.filename, file.baseName)}
+                      sendingNoVideo={sendingNoVideoId === file.id}
                     />
                   ))}
                 </div>
@@ -414,6 +453,40 @@ function App() {
                   </select>
                 </div>
 
+                <div className="border-t border-gray-800 my-6"></div>
+
+                <div className="space-y-4">
+                  <h3 className="text-gray-300 font-semibold flex items-center gap-2"><Video size={16} className="text-blue-400"/> Video Release Validation</h3>
+                  
+                  <div className="flex items-start gap-3">
+                    <input
+                      type="checkbox"
+                      id="videoValidationEnabled"
+                      checked={!!config.videoValidationEnabled}
+                      onChange={e => setConfig({...config, videoValidationEnabled: e.target.checked})}
+                      className="mt-1 rounded border-gray-600 bg-gray-900 text-indigo-600 focus:ring-indigo-500"
+                    />
+                    <div>
+                      <label htmlFor="videoValidationEnabled" className="text-gray-300 font-medium cursor-pointer">Enable video-release validation</label>
+                      <p className="text-xs text-gray-500 mt-0.5">When enabled, shows a "Check Video" button on each unmatched audio file. Queries MusicBrainz to determine if a video release exists.</p>
+                    </div>
+                  </div>
+
+                  {config.videoValidationEnabled && (
+                    <div className="space-y-2 pl-6">
+                      <label className="text-gray-400 font-medium">No-Video Destination Directory (Optional)</label>
+                      <p className="text-xs text-gray-500 mb-2">When "Send to No-Video Location" is used, files move here instead of the main destination. If left blank, uses the main destination with a "no video" subfolder.</p>
+                      <input
+                        type="text"
+                        value={config.noVideoDestDir || ''}
+                        onChange={e => setConfig({...config, noVideoDestDir: e.target.value})}
+                        placeholder="e.g. D:\NoVideoSongs"
+                        className="w-full px-4 py-2 bg-gray-800 border border-gray-700 rounded focus:outline-none focus:ring-1 focus:ring-primary-500 text-gray-200 font-mono text-xs"
+                      />
+                    </div>
+                  )}
+                </div>
+
                 <div className="pt-4 flex justify-end">
                   <button type="submit" disabled={configSaving} className="flex items-center gap-2 px-5 py-2 bg-primary-600 hover:bg-primary-500 text-white rounded font-medium transition disabled:opacity-50">
                     <Save size={16} />
@@ -439,7 +512,7 @@ function NavItem({ icon, label, active = false, onClick }: { icon: React.ReactNo
   );
 }
 
-function FileCard({ file, color, onYoutubeSearch, searchingYoutube, onSpotifySearch, searchingSpotify, onDownload, downloading, selected, onToggleSelect }: { file: FileItem, color: 'blue' | 'purple', onYoutubeSearch?: () => void, searchingYoutube?: boolean, onSpotifySearch?: () => void, searchingSpotify?: boolean, onDownload?: (quality: string) => void, downloading?: boolean, selected?: boolean, onToggleSelect?: () => void }) {
+function FileCard({ file, color, onYoutubeSearch, searchingYoutube, onSpotifySearch, searchingSpotify, onDownload, downloading, selected, onToggleSelect, videoValidationEnabled, onCheckVideoRelease, checkingVideo, onSendNoVideo, sendingNoVideo }: { file: FileItem, color: 'blue' | 'purple', onYoutubeSearch?: () => void, searchingYoutube?: boolean, onSpotifySearch?: () => void, searchingSpotify?: boolean, onDownload?: (quality: string) => void, downloading?: boolean, selected?: boolean, onToggleSelect?: () => void, videoValidationEnabled?: boolean, onCheckVideoRelease?: () => void, checkingVideo?: boolean, onSendNoVideo?: () => void, sendingNoVideo?: boolean }) {
   const Icon = color === 'blue' ? FileAudio : FileVideo;
   const bgColors = color === 'blue' ? 'bg-blue-400/10 text-blue-400 border-blue-400/20' : 'bg-purple-400/10 text-purple-400 border-purple-400/20';
   
@@ -470,6 +543,9 @@ function FileCard({ file, color, onYoutubeSearch, searchingYoutube, onSpotifySea
     }
   }, [isExpanded, file.youtubeUrl, file.spotifyUrl]);
   
+  const videoStatus = file.videoStatus;
+  const showVideoValidation = color === 'blue' && videoValidationEnabled;
+
   return (
     <div className={`flex flex-col rounded-lg border hover:bg-gray-800 transition group overflow-hidden ${selected ? 'bg-gray-800 border-indigo-500 shadow-[0_0_10px_rgba(99,102,241,0.2)]' : `bg-gray-800/40 ${bgColors}`}`}>
       <div className="p-3 flex justify-between items-center">
@@ -489,8 +565,8 @@ function FileCard({ file, color, onYoutubeSearch, searchingYoutube, onSpotifySea
           </div>
         </div>
         
-        {color === 'blue' && onYoutubeSearch && !isExpanded && (
-          <div className="shrink-0 ml-2">
+        <div className="shrink-0 ml-2 flex items-center gap-1.5">
+          {color === 'blue' && onYoutubeSearch && !isExpanded && (
             <button 
               onClick={onYoutubeSearch}
               disabled={searchingYoutube}
@@ -498,11 +574,9 @@ function FileCard({ file, color, onYoutubeSearch, searchingYoutube, onSpotifySea
             >
               {searchingYoutube ? 'Searching...' : 'Find Video'}
             </button>
-          </div>
-        )}
+          )}
 
-        {color === 'purple' && onSpotifySearch && !isExpanded && (
-          <div className="shrink-0 ml-2">
+          {color === 'purple' && onSpotifySearch && !isExpanded && (
             <button 
               onClick={onSpotifySearch}
               disabled={searchingSpotify}
@@ -510,9 +584,55 @@ function FileCard({ file, color, onYoutubeSearch, searchingYoutube, onSpotifySea
             >
               {searchingSpotify ? 'Searching...' : 'Find Spotify'}
             </button>
-          </div>
-        )}
+          )}
+
+          {showVideoValidation && (
+            <button
+              onClick={onCheckVideoRelease}
+              disabled={checkingVideo}
+              title="Check MusicBrainz for a video release"
+              className="px-2 py-1 bg-gray-800 border border-gray-700 hover:border-blue-500 text-gray-400 hover:text-blue-400 rounded text-[10px] font-medium transition opacity-0 group-hover:opacity-100 disabled:opacity-50 flex items-center gap-1"
+            >
+              <Video size={10} />
+              {checkingVideo ? 'Checking...' : 'Check Video'}
+            </button>
+          )}
+        </div>
       </div>
+
+      {/* Video status badge */}
+      {showVideoValidation && videoStatus && (
+        <div className="px-3 pb-2 flex items-center gap-2">
+          {videoStatus === 'available' && (
+            <span className="flex items-center gap-1 text-[10px] font-semibold text-emerald-400 bg-emerald-400/10 border border-emerald-400/30 rounded px-2 py-0.5">
+              <Video size={10} /> Video available
+            </span>
+          )}
+          {videoStatus === 'unavailable' && (
+            <>
+              <span className="flex items-center gap-1 text-[10px] font-semibold text-orange-400 bg-orange-400/10 border border-orange-400/30 rounded px-2 py-0.5">
+                <VideoOff size={10} /> No video available
+              </span>
+              {onSendNoVideo && (
+                <button
+                  onClick={onSendNoVideo}
+                  disabled={sendingNoVideo}
+                  title="Send to no-video destination folder"
+                  className="flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold text-orange-300 bg-orange-400/10 border border-orange-400/30 hover:bg-orange-400/20 rounded transition disabled:opacity-50"
+                >
+                  <Send size={10} />
+                  {sendingNoVideo ? 'Sending...' : 'Send to No-Video'}
+                </button>
+              )}
+            </>
+          )}
+          {videoStatus === 'unknown' && (
+            <span className="flex items-center gap-1 text-[10px] font-semibold text-gray-500 bg-gray-700/30 border border-gray-600/30 rounded px-2 py-0.5">
+              <HelpCircle size={10} /> Status unknown
+            </span>
+          )}
+        </div>
+      )}
 
       {isExpanded && (
         <div className="px-3 pb-3 pt-1 flex flex-col gap-2 border-t border-gray-700/50 mt-1">
