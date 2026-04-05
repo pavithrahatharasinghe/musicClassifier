@@ -49,5 +49,43 @@ class MusicBrainzService {
             }
         });
     }
+    /**
+     * Check whether a recording has a video release on MusicBrainz.
+     * Queries the recording API with URL relations and checks for music video links.
+     * Returns 'available', 'unavailable', or 'unknown' (on error / no results).
+     */
+    checkVideoRelease(query) {
+        return __awaiter(this, void 0, void 0, function* () {
+            var _a, _b;
+            try {
+                const response = yield axios_1.default.get('https://musicbrainz.org/ws/2/recording/', {
+                    params: {
+                        query: `recording:"${query}"`,
+                        fmt: 'json',
+                        limit: 5,
+                        inc: 'url-rels'
+                    },
+                    headers: {
+                        'User-Agent': 'MusicClassifier/4.0 ( media@example.com )'
+                    }
+                });
+                if (!((_b = (_a = response.data) === null || _a === void 0 ? void 0 : _a.recordings) === null || _b === void 0 ? void 0 : _b.length)) {
+                    return 'unknown';
+                }
+                for (const recording of response.data.recordings) {
+                    const relations = recording.relations || [];
+                    const hasVideoRelation = relations.some((rel) => rel.type === 'music video' || rel.type === 'video streaming');
+                    if (hasVideoRelation) {
+                        return 'available';
+                    }
+                }
+                return 'unavailable';
+            }
+            catch (error) {
+                console.error('MusicBrainz video release check error:', error);
+                return 'unknown';
+            }
+        });
+    }
 }
 exports.MusicBrainzService = MusicBrainzService;

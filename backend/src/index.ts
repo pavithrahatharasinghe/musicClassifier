@@ -9,6 +9,7 @@ import { OllamaService } from './services/ollama';
 import { InternetSearchService } from './services/internet';
 import { YouTubeService } from './services/youtube';
 import { SpotifyService } from './services/spotify';
+import { MusicBrainzService } from './services/musicbrainz';
 import { db } from './db';
 import { AppConfig } from './types';
 
@@ -49,6 +50,7 @@ const ollama = new OllamaService();
 const internet = new InternetSearchService();
 const youtube = new YouTubeService();
 const spotify = new SpotifyService();
+const musicbrainz = new MusicBrainzService();
 
 // Config routes
 app.get('/api/config', (req, res) => res.json({ success: true, config: currentConfig }));
@@ -309,6 +311,51 @@ app.post('/api/formats', async (req, res) => {
     ));
 
     res.json({ success: true, videos: videoResolutions, audios: audioTypes });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/check-video-release/:id - Check if a file has a video release on MusicBrainz
+app.post('/api/check-video-release/:id', async (req, res) => {
+  const fileId = req.params.id;
+  const { title } = req.body;
+  if (!title) return res.status(400).json({ success: false, error: 'title required' });
+
+  try {
+    const status = await musicbrainz.checkVideoRelease(title);
+    library.updateVideoStatus(fileId, status);
+    res.json({ success: true, videoStatus: status, state: library.getMatchState() });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/send-no-video - Move a no-video audio file to the configured noVideoDestDir
+app.post('/api/send-no-video', async (req, res) => {
+  const { fileId, filename } = req.body;
+  if (!fileId) return res.status(400).json({ success: false, error: 'fileId required' });
+
+  try {
+    let category = 'Uncategorized';
+
+    // Attempt to AI-categorize using filename if provided so the file lands in the right subfolder
+    if (filename) {
+      const model = currentConfig.ollamaModel || 'llama3';
+      const cleanName = await ollama.cleanQuery(filename, model);
+      const internetData = cleanName ? await internet.searchTrack(cleanName) : [];
+      const aiResult = await ollama.categorize(filename, internetData ?? [], model);
+      if (aiResult?.verifiedCategory) {
+        category = aiResult.verifiedCategory;
+      }
+    }
+
+    const moveSuccess = library.moveNoVideo(fileId, category);
+    if (moveSuccess) {
+      res.json({ success: true, state: library.getMatchState(), category });
+    } else {
+      res.status(500).json({ success: false, error: 'Failed to move file.' });
+    }
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }

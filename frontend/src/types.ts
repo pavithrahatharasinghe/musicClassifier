@@ -4,6 +4,8 @@ export interface AppConfig {
   destDir: string;
   downloadDir?: string;
   ollamaModel?: string; // New Model field
+  videoValidationEnabled?: boolean; // Enable video-release validation during auto-tagging
+  noVideoDestDir?: string; // Destination for no-video songs (overrides destDir when set)
 }
 
 export interface MediaMetadata {
@@ -24,6 +26,7 @@ export interface FileItem {
   albumArt?: string | null;
   isrc?: string | null;
   previewUrl?: string | null;
+  videoStatus?: 'available' | 'unavailable' | 'unknown' | null;
 }
 
 export interface OllamaClassification {

@@ -25,8 +25,11 @@ class YouTubeService {
                 const query = `${songName} Official Music Video`;
                 const result = yield (0, yt_search_1.default)(query);
                 if (result && result.videos && result.videos.length > 0) {
-                    // Return the first valid youtube video URL
-                    return result.videos[0].url;
+                    const video = result.videos[0];
+                    return {
+                        url: video.url,
+                        previewUrl: `https://www.youtube.com/embed/${video.videoId}`
+                    };
                 }
                 return null;
             }

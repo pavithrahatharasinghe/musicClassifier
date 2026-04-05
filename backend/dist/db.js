@@ -22,6 +22,7 @@ exports.db.exec(`
     type TEXT NOT NULL,
     youtubeUrl TEXT,
     spotifyUrl TEXT,
+    previewUrl TEXT,
     albumArt TEXT,
     isrc TEXT,
     createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -42,4 +43,20 @@ exports.db.exec(`
     FOREIGN KEY(videoId) REFERENCES files(id) ON DELETE CASCADE
   );
 `);
+// Migration for adding previewUrl if missing
+try {
+    exports.db.exec('ALTER TABLE files ADD COLUMN previewUrl TEXT;');
+    console.log('✅ SQLite Migration: added previewUrl column');
+}
+catch (e) {
+    // column likely exists
+}
+// Migration for adding videoStatus if missing
+try {
+    exports.db.exec("ALTER TABLE files ADD COLUMN videoStatus TEXT;");
+    console.log('✅ SQLite Migration: added videoStatus column');
+}
+catch (e) {
+    // column likely exists
+}
 console.log('✅ SQLite Database Initialized');
