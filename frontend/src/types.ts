@@ -3,9 +3,8 @@ export interface AppConfig {
   videoDir: string;
   destDir: string;
   downloadDir?: string;
-  ollamaModel?: string; // New Model field
-  videoValidationEnabled?: boolean; // Enable video-release validation during auto-tagging
-  noVideoDestDir?: string; // Destination for no-video songs (overrides destDir when set)
+  ollamaModel?: string;
+  noVideoDestDir?: string; // Destination for no-video songs
 }
 
 export interface MediaMetadata {

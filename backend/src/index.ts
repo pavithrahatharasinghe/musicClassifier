@@ -85,22 +85,80 @@ app.get('/api/files', (req, res) => {
   }
 });
 
-// POST /api/automatch - Run Ollama batch
+// POST /api/automatch - Run AI matching only on currently unmatched files (batched)
 app.post('/api/automatch', async (req, res) => {
   try {
     const state = library.getMatchState();
-    if (state.unmatchedAudio.length > 0 && state.unmatchedVideo.length > 0) {
-      const model = currentConfig.ollamaModel || 'llama3';
-      const matches = await ollama.findMatches(state.unmatchedAudio, state.unmatchedVideo, model);
-      library.addOllamaMatches(matches);
-      res.json({ success: true, state: library.getMatchState(), matches });
-    } else {
-      res.json({ success: true, state });
+
+    if (state.unmatchedAudio.length === 0 || state.unmatchedVideo.length === 0) {
+      return res.json({ success: true, state });
     }
+
+    const model = currentConfig.ollamaModel || 'llama3';
+
+    // Send in batches of 50×50 so Ollama doesn't get overwhelmed by 500+ names at once
+    const BATCH = 50;
+    let allMatches: { audioName: string; videoName: string }[] = [];
+
+    const audioList = [...state.unmatchedAudio];
+    const videoList = [...state.unmatchedVideo];
+
+    for (let ai = 0; ai < audioList.length; ai += BATCH) {
+      const audioBatch = audioList.slice(ai, ai + BATCH);
+      for (let vi = 0; vi < videoList.length; vi += BATCH) {
+        const videoBatch = videoList.slice(vi, vi + BATCH);
+        try {
+          const matches = await ollama.findMatches(audioBatch, videoBatch, model);
+          allMatches = allMatches.concat(matches);
+        } catch (batchErr: any) {
+          console.error(`Batch [${ai}-${ai+BATCH}] × [${vi}-${vi+BATCH}] failed:`, batchErr.message);
+        }
+      }
+    }
+
+    library.addOllamaMatches(allMatches);
+    res.json({ success: true, state: library.getMatchState(), matches: allMatches });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
+
+// POST /api/reset-matches - Clear all non-exact pairs and re-run AI matching from scratch
+app.post('/api/reset-matches', async (req, res) => {
+  try {
+    library.clearNonExactPairs();
+    const state = library.getMatchState();
+
+    if (state.unmatchedAudio.length === 0 || state.unmatchedVideo.length === 0) {
+      return res.json({ success: true, state });
+    }
+
+    const model = currentConfig.ollamaModel || 'llama3';
+    const BATCH = 50;
+    let allMatches: { audioName: string; videoName: string }[] = [];
+    const audioList = [...state.unmatchedAudio];
+    const videoList = [...state.unmatchedVideo];
+
+    for (let ai = 0; ai < audioList.length; ai += BATCH) {
+      const audioBatch = audioList.slice(ai, ai + BATCH);
+      for (let vi = 0; vi < videoList.length; vi += BATCH) {
+        const videoBatch = videoList.slice(vi, vi + BATCH);
+        try {
+          const matches = await ollama.findMatches(audioBatch, videoBatch, model);
+          allMatches = allMatches.concat(matches);
+        } catch (batchErr: any) {
+          console.error(`Batch failed:`, batchErr.message);
+        }
+      }
+    }
+
+    library.addOllamaMatches(allMatches);
+    res.json({ success: true, state: library.getMatchState(), matches: allMatches });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 
 app.post('/api/unlink', (req, res) => {
   const { pairId } = req.body;

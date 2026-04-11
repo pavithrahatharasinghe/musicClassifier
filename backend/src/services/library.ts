@@ -90,8 +90,9 @@ export class LibraryService {
     }
 
     this.autoBuildExactPairs();
-    this.autoBuildFuzzyPairs();
+    this.autoBuildSmartFuzzyPairs();
   }
+
 
   /**
    * Automatically pairs tracks that have the exact same baseName.
@@ -123,9 +124,19 @@ export class LibraryService {
   }
 
   /**
-   * Automatically pairs tracks probabilistically by comparing word tokens.
+   * Removes all non-exact pairs so they can be re-matched from scratch by AI.
+   * Called only by the explicit /api/reset-matches route.
    */
-  private autoBuildFuzzyPairs() {
+  public clearNonExactPairs() {
+    db.prepare("DELETE FROM pairs WHERE status != 'exact'").run();
+  }
+
+  /**
+   * Smart fuzzy pairing: only links audio→video when they share the SAME leading
+   * artist token AND ≥90% of the remaining title words. This prevents cross-artist
+   * false positives like "=LOVE - ヒロインズ" ↔ "2NE1 - I LOVE YOU MV".
+   */
+  private autoBuildSmartFuzzyPairs() {
     const unassignedAudio = db.prepare(`
       SELECT f.* FROM files f
       LEFT JOIN pairs p ON f.id = p.audioId
@@ -138,18 +149,36 @@ export class LibraryService {
       WHERE p.id IS NULL AND f.type = 'Video'
     `).all() as any[];
 
+    if (unassignedAudio.length === 0 || unassignedVideo.length === 0) return;
+
     const insertPair = db.prepare(`
       INSERT OR IGNORE INTO pairs (id, audioId, videoId, status)
       VALUES (?, ?, ?, 'fuzzy')
     `);
 
-    // Extracts normalized alphabetical words > 1 character, handles korean logic as well
-    const getTokens = (str: string) => (str || '').toLowerCase().replace(/[^a-z0-9\s가-힣]/g, ' ').split(/\s+/).filter(w => w.length > 1);
+    // Stop-words that are too common to be useful for matching
+    const STOP = new Set(['mv', 'official', 'video', 'music', 'audio', 'the', 'a', 'an', 'and', 'in', 'of', 'to', 'is', 'ft', 'feat', 'with', 'live', 'version', 'edit', 'hd', '4k', '1080p', 'lyrics']);
+
+    const tokenize = (str: string): string[] =>
+      (str || '').toLowerCase()
+        .replace(/[\(\)\[\]\{\}]/g, ' ')
+        .replace(/[^a-z0-9\s가-힣ぁ-ん一-龯]/g, ' ')
+        .split(/[\s\-_]+/)
+        .map(w => w.trim())
+        .filter(w => w.length > 1 && !STOP.has(w));
+
+    const getArtist = (str: string): string => {
+      // Artist is everything before the first ' - ' separator
+      const dashIdx = str.indexOf(' - ');
+      if (dashIdx !== -1) return str.substring(0, dashIdx).toLowerCase().trim();
+      return tokenize(str)[0] || '';
+    };
 
     const availableVideos = [...unassignedVideo];
 
     for (const audio of unassignedAudio) {
-      const aTokens = getTokens(audio.baseName);
+      const aArtist = getArtist(audio.baseName);
+      const aTokens = tokenize(audio.baseName);
       if (aTokens.length === 0) continue;
 
       let bestScore = 0;
@@ -157,31 +186,37 @@ export class LibraryService {
       let bestIdx = -1;
 
       for (let i = 0; i < availableVideos.length; i++) {
-         const video = availableVideos[i];
-         const vTokens = getTokens(video.baseName);
-         if (vTokens.length === 0) continue;
+        const video = availableVideos[i];
+        const vArtist = getArtist(video.baseName);
+        const vTokens = tokenize(video.baseName);
+        if (vTokens.length === 0) continue;
 
-         let matches = 0;
-         for (const t of aTokens) {
-           if (vTokens.includes(t)) matches++;
-         }
-         
-         // Using division on audio's string length guarantees we mandate 70% of the AUDIO's title exists in the VIDEO's title!
-         const score = matches / aTokens.length;
-         if (score > bestScore) {
-           bestScore = score;
-           bestVideo = video;
-           bestIdx = i;
-         }
+        // Artist must match at least partially (prefix match or full match)
+        const artistMatch = aArtist.length > 0 && vArtist.length > 0 &&
+          (aArtist.startsWith(vArtist) || vArtist.startsWith(aArtist) || aArtist === vArtist);
+        if (!artistMatch) continue;
+
+        // Count how many audio tokens appear in video tokens
+        let matches = 0;
+        for (const t of aTokens) {
+          if (vTokens.includes(t)) matches++;
+        }
+        const score = matches / aTokens.length;
+        if (score > bestScore) {
+          bestScore = score;
+          bestVideo = video;
+          bestIdx = i;
+        }
       }
 
-      // If at least 70% of the track's words appear in the video file
-      if (bestScore >= 0.7 && bestVideo) {
-         insertPair.run(`fuzzy-${audio.id}`, audio.id, bestVideo.id);
-         availableVideos.splice(bestIdx, 1); // remove internally to avoid double-binding
+      // Require ≥90% of audio title words to match, AND artist must have matched
+      if (bestScore >= 0.9 && bestVideo) {
+        insertPair.run(`fuzzy-${audio.id}`, audio.id, bestVideo.id);
+        availableVideos.splice(bestIdx, 1);
       }
     }
   }
+
 
   public getMatchState(): MatchMakerState {
     this.syncDisk();

@@ -3,5 +3,6 @@
   "videoDir": "F:\\Videos\\KPOP - JPOP",
   "destDir": "D:\\Projects\\musicClassifier\\organized",
   "ollamaModel": "qwen2.5:14b",
-  "downloadDir": "F:\\DLs"
+  "downloadDir": "F:\\DLs",
+  "videoValidationEnabled": true
 }

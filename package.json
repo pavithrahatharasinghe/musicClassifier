@@ -1,0 +1,25 @@
+{
+  "name": "musicclassifier",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "concurrently --kill-others-on-fail \"npm run dev --prefix frontend\" \"npm run dev --prefix backend\" ",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pavithrahatharasinghe/musicClassifier.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/pavithrahatharasinghe/musicClassifier/issues"
+  },
+  "homepage": "https://github.com/pavithrahatharasinghe/musicClassifier#readme",
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}
