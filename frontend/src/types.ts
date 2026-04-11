@@ -62,3 +62,14 @@ export interface MatchMakerState {
   unmatchedVideo: FileItem[];
   matchedPairs: MatchedPair[];
 }
+
+export interface SpotiflacTrack {
+  id: string;
+  name: string;
+  type: string;
+  artists: string;
+  album_name: string;
+  images: string;
+  external_urls: string;
+  duration_ms: number;
+}

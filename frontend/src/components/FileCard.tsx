@@ -1,24 +1,51 @@
 import { useEffect, useState } from 'react';
 import axios from 'axios';
 import {
-  FileAudio, FileVideo, Video, VideoOff, HelpCircle, Send, Loader2
+  FileAudio, FileVideo, Video, VideoOff, HelpCircle, Send, Loader2,
+  Music2, Clock, Download, CheckCircle2, AlertCircle,
 } from 'lucide-react';
-import type { FileItem } from '../types';
+import type { FileItem, SpotiflacTrack } from '../types';
 
 const API_BASE = 'http://localhost:3001/api';
+
+/** Format ms to m:ss */
+function fmtDuration(ms: number) {
+  const s = Math.floor(ms / 1000);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
+interface AudioReport {
+  codec: string;
+  sample_rate: string;
+  bit_rate: string;
+  channels: string;
+  format_name: string;
+}
+
+interface SpotiflacDownloadResult {
+  success: boolean;
+  chosen: string;
+  file: string;
+  message: string;
+  audio_report: AudioReport;
+}
 
 interface FileCardProps {
   file: FileItem;
   color: 'blue' | 'purple';
   onYoutubeSearch?: () => void;
   searchingYoutube?: boolean;
-  onSpotifySearch?: () => void;
-  searchingSpotify?: boolean;
+  // SpotiFLAC (replaces Spotify for video cards)
+  spotiflacResults?: SpotiflacTrack[];
+  onSpotiflacSearch?: () => void;
+  searchingSpotiflac?: boolean;
+  onSpotiflacDownload?: (track: SpotiflacTrack) => Promise<SpotiflacDownloadResult | null>;
+  // YouTube download (audio cards)
   onDownload?: (quality: string) => void;
   downloading?: boolean;
   selected?: boolean;
   onToggleSelect?: () => void;
-  // Video check is always on for audio cards
+  // Video check always on for audio cards
   onCheckVideoRelease?: () => void;
   checkingVideo?: boolean;
   onSendNoVideo?: () => void;
@@ -30,8 +57,10 @@ function FileCard({
   color,
   onYoutubeSearch,
   searchingYoutube,
-  onSpotifySearch,
-  searchingSpotify,
+  spotiflacResults,
+  onSpotiflacSearch,
+  searchingSpotiflac,
+  onSpotiflacDownload,
   onDownload,
   downloading,
   selected,
@@ -44,14 +73,18 @@ function FileCard({
   const Icon = color === 'blue' ? FileAudio : FileVideo;
   const isAudio = color === 'blue';
 
-  const isExpanded = !!file.previewUrl || !!file.youtubeUrl || !!file.spotifyUrl;
+  const isExpanded = !!file.previewUrl || !!file.youtubeUrl;
   const [quality, setQuality] = useState(isAudio ? '1080' : 'best');
   const [formats, setFormats] = useState<{ videos: number[]; audios: string[] } | null>(null);
   const [loadingFormats, setLoadingFormats] = useState(false);
 
+  // Per-track download status within this card
+  const [downloadResults, setDownloadResults] = useState<Record<string, SpotiflacDownloadResult | 'error'>>({});
+  const [localDownloadingTrackId, setLocalDownloadingTrackId] = useState<string | null>(null);
+
   useEffect(() => {
     if (isExpanded && !formats && !loadingFormats) {
-      const url = file.youtubeUrl || file.spotifyUrl;
+      const url = file.youtubeUrl;
       if (url) {
         setLoadingFormats(true);
         axios
@@ -70,11 +103,10 @@ function FileCard({
           .finally(() => setLoadingFormats(false));
       }
     }
-  }, [isExpanded, file.youtubeUrl, file.spotifyUrl]);
+  }, [isExpanded, file.youtubeUrl]);
 
   const videoStatus = file.videoStatus;
 
-  // Determine border color based on state
   const borderColor = selected
     ? 'border-indigo-500 shadow-[0_0_8px_rgba(99,102,241,0.25)]'
     : isAudio
@@ -86,6 +118,25 @@ function FileCard({
     : isAudio
     ? 'bg-blue-500/5'
     : 'bg-purple-500/5';
+
+  async function handleTrackDownload(track: SpotiflacTrack) {
+    if (!onSpotiflacDownload) return;
+    setLocalDownloadingTrackId(track.id);
+    try {
+      const result = await onSpotiflacDownload(track);
+      if (result) {
+        setDownloadResults((prev) => ({ ...prev, [track.id]: result }));
+      } else {
+        setDownloadResults((prev) => ({ ...prev, [track.id]: 'error' }));
+      }
+    } catch {
+      setDownloadResults((prev) => ({ ...prev, [track.id]: 'error' }));
+    } finally {
+      setLocalDownloadingTrackId(null);
+    }
+  }
+
+  const showSpotiflacPanel = !isAudio && (spotiflacResults !== undefined && spotiflacResults !== null);
 
   return (
     <div className={`flex flex-col rounded-lg border transition-all duration-150 overflow-hidden ${borderColor} ${bgColor}`}>
@@ -111,6 +162,7 @@ function FileCard({
 
         {/* Action buttons */}
         <div className="shrink-0 flex items-center gap-1.5">
+          {/* Audio cards: Find Video button */}
           {isAudio && onYoutubeSearch && !isExpanded && (
             <button
               onClick={onYoutubeSearch}
@@ -122,18 +174,19 @@ function FileCard({
             </button>
           )}
 
-          {!isAudio && onSpotifySearch && !isExpanded && (
+          {/* Video cards: Find Audio (SpotiFLAC) button */}
+          {!isAudio && onSpotiflacSearch && (
             <button
-              onClick={onSpotifySearch}
-              disabled={searchingSpotify}
+              onClick={onSpotiflacSearch}
+              disabled={searchingSpotiflac || localDownloadingTrackId !== null}
               className="flex items-center gap-1 px-2 py-1 bg-gray-800 border border-gray-700 hover:border-purple-500/50 hover:text-purple-400 text-gray-400 rounded text-[10px] font-medium transition disabled:opacity-50"
             >
-              {searchingSpotify ? <Loader2 size={9} className="animate-spin" /> : null}
-              {searchingSpotify ? 'Searching...' : 'Find Spotify'}
+              {searchingSpotiflac ? <Loader2 size={9} className="animate-spin" /> : <Music2 size={9} />}
+              {searchingSpotiflac ? 'Searching...' : 'Find Audio'}
             </button>
           )}
 
-          {/* Video check — always shown for audio files */}
+          {/* Video check — always shown for audio files without status */}
           {isAudio && onCheckVideoRelease && !videoStatus && (
             <button
               onClick={onCheckVideoRelease}
@@ -178,7 +231,6 @@ function FileCard({
               <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-gray-500 bg-gray-700/30 border border-gray-600/30 rounded-full px-2 py-0.5">
                 <HelpCircle size={9} /> Status unknown
               </span>
-              {/* Allow re-checking */}
               {onCheckVideoRelease && (
                 <button
                   onClick={onCheckVideoRelease}
@@ -193,22 +245,129 @@ function FileCard({
         </div>
       )}
 
-      {/* Expanded preview + download section */}
-      {isExpanded && (
+      {/* SpotiFLAC track picker panel (video cards only) */}
+      {showSpotiflacPanel && (
+        <div className="border-t border-gray-700/40 px-3 pb-3 pt-2 flex flex-col gap-2">
+          {spotiflacResults!.length === 0 ? (
+            <div className="text-[10px] text-gray-500 text-center py-2">No tracks found. Try searching again.</div>
+          ) : (
+            <>
+              <div className="text-[9px] text-gray-500 uppercase tracking-widest font-semibold mb-0.5">
+                Select a track to download as FLAC
+              </div>
+              <div className="flex flex-col gap-1.5 max-h-72 overflow-y-auto pr-0.5">
+                {spotiflacResults!.map((track) => {
+                  const dlResult = downloadResults[track.id];
+                  const isThisDownloading = localDownloadingTrackId === track.id;
+                  const isSuccess = dlResult && dlResult !== 'error';
+                  const isErr = dlResult === 'error';
+
+                  return (
+                    <div
+                      key={track.id}
+                      className={`flex items-center gap-2.5 p-2 rounded-lg border transition-all ${
+                        isSuccess
+                          ? 'border-emerald-500/30 bg-emerald-500/5'
+                          : isErr
+                          ? 'border-red-500/30 bg-red-500/5'
+                          : 'border-gray-700/50 bg-gray-800/40 hover:border-purple-500/30 hover:bg-purple-500/5'
+                      }`}
+                    >
+                      {/* Album art */}
+                      <div className="shrink-0 w-9 h-9 rounded overflow-hidden bg-gray-700">
+                        {track.images ? (
+                          <img
+                            src={track.images}
+                            alt={track.album_name}
+                            className="w-full h-full object-cover"
+                          />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center">
+                            <Music2 size={14} className="text-gray-500" />
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Track info */}
+                      <div className="flex-1 min-w-0">
+                        <div className="text-[11px] font-semibold text-gray-100 truncate leading-tight">
+                          {track.name}
+                        </div>
+                        <div className="text-[10px] text-gray-400 truncate">{track.artists}</div>
+                        <div className="text-[9px] text-gray-600 truncate mt-0.5">{track.album_name}</div>
+
+                        {/* Success: show audio report */}
+                        {isSuccess && (dlResult as SpotiflacDownloadResult).audio_report && (
+                          <div className="mt-1 flex items-center gap-1 flex-wrap">
+                            <span className="text-[9px] font-bold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded px-1.5 py-0.5 uppercase">
+                              {(dlResult as SpotiflacDownloadResult).audio_report.format_name}
+                            </span>
+                            <span className="text-[9px] text-gray-500">
+                              {(dlResult as SpotiflacDownloadResult).audio_report.sample_rate} Hz
+                            </span>
+                            <span className="text-[9px] text-gray-500">
+                              {Math.round(parseInt((dlResult as SpotiflacDownloadResult).audio_report.bit_rate) / 1000)} kbps
+                            </span>
+                            <span className="text-[9px] text-gray-500">
+                              via {(dlResult as SpotiflacDownloadResult).chosen}
+                            </span>
+                          </div>
+                        )}
+
+                        {/* Error */}
+                        {isErr && (
+                          <div className="mt-1 text-[9px] text-red-400 flex items-center gap-1">
+                            <AlertCircle size={8} /> Download failed
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Duration + download button */}
+                      <div className="shrink-0 flex flex-col items-end gap-1.5">
+                        <span className="text-[9px] text-gray-500 flex items-center gap-0.5">
+                          <Clock size={8} />
+                          {fmtDuration(track.duration_ms)}
+                        </span>
+                        {isSuccess ? (
+                          <span className="inline-flex items-center gap-1 text-[9px] font-bold text-emerald-400">
+                            <CheckCircle2 size={10} /> Done
+                          </span>
+                        ) : (
+                          <button
+                            onClick={() => handleTrackDownload(track)}
+                            disabled={isThisDownloading || localDownloadingTrackId !== null}
+                            className="inline-flex items-center gap-1 px-2 py-1 bg-purple-600/80 hover:bg-purple-600 disabled:opacity-50 text-white text-[9px] font-bold rounded transition"
+                          >
+                            {isThisDownloading ? (
+                              <Loader2 size={8} className="animate-spin" />
+                            ) : (
+                              <Download size={8} />
+                            )}
+                            {isThisDownloading ? 'DL...' : 'FLAC'}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Expanded YouTube preview + download section (audio cards only) */}
+      {isAudio && isExpanded && (
         <div className="px-3 pb-3 pt-1 flex flex-col gap-2 border-t border-gray-700/40">
           {file.previewUrl && (
             <div className="w-full bg-black/40 rounded overflow-hidden mt-1">
-              {isAudio ? (
-                <iframe
-                  src={file.previewUrl}
-                  className="w-full aspect-video"
-                  frameBorder="0"
-                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                  allowFullScreen
-                />
-              ) : (
-                <audio controls src={file.previewUrl} className="w-full h-9" />
-              )}
+              <iframe
+                src={file.previewUrl}
+                className="w-full aspect-video"
+                frameBorder="0"
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                allowFullScreen
+              />
             </div>
           )}
 
@@ -223,18 +382,11 @@ function FileCard({
               >
                 {loadingFormats ? (
                   <option>Loading...</option>
-                ) : isAudio ? (
+                ) : (
                   <>
                     <option value="best">Best (4K+)</option>
                     {formats?.videos.map((v) => (
                       <option key={v} value={v.toString()}>{v}p</option>
-                    ))}
-                  </>
-                ) : (
-                  <>
-                    <option value="best">Best Audio</option>
-                    {formats?.audios.map((a) => (
-                      <option key={a} value={a}>{a.toUpperCase()}</option>
                     ))}
                   </>
                 )}

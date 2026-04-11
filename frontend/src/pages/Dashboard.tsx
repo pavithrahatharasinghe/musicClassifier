@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
 import { Wand2, FileAudio, FileVideo, CheckCircle2, RefreshCw, Loader2 } from 'lucide-react';
-import type { MatchMakerState } from '../types';
+import type { MatchMakerState, SpotiflacTrack } from '../types';
 import FileCard from '../components/FileCard';
 import MatchedPairCard from '../components/MatchedPairCard';
 
@@ -17,7 +17,6 @@ function Dashboard() {
   const [resetting, setResetting] = useState(false);
   const [analyzingId, setAnalyzingId] = useState<string | null>(null);
   const [searchingYtId, setSearchingYtId] = useState<string | null>(null);
-  const [searchingSpotifyId, setSearchingSpotifyId] = useState<string | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [selectedAudioIds, setSelectedAudioIds] = useState<string[]>([]);
   const [organizingAudio, setOrganizingAudio] = useState(false);
@@ -26,6 +25,10 @@ function Dashboard() {
   const [checkingVideoId, setCheckingVideoId] = useState<string | null>(null);
   const [sendingNoVideoId, setSendingNoVideoId] = useState<string | null>(null);
   const [rescanning, setRescanning] = useState(false);
+
+  // SpotiFLAC state — map of fileId → track results (null while not yet searched)
+  const [spotiflacResultsMap, setSpotiflacResultsMap] = useState<Record<string, SpotiflacTrack[]>>({});
+  const [searchingSpotiflacId, setSearchingSpotiflacId] = useState<string | null>(null);
 
   useEffect(() => {
     fetchMatchState();
@@ -114,21 +117,54 @@ function Dashboard() {
     }
   };
 
-  const handleSpotifySearch = async (fileId: string, baseName: string) => {
+  // ── SpotiFLAC ──────────────────────────────────────────────────────────────
+
+  const handleSpotiflacSearch = async (fileId: string, baseName: string) => {
     try {
-      setSearchingSpotifyId(fileId);
-      const res = await axios.post(`${API_BASE}/spotify/${fileId}`, { title: baseName });
+      setSearchingSpotiflacId(fileId);
+      const res = await axios.post(`${API_BASE}/spotiflac/search`, { query: baseName, limit: 8 });
       if (res.data.success) {
-        setMatchState(res.data.state);
+        setSpotiflacResultsMap((prev) => ({ ...prev, [fileId]: res.data.tracks }));
       } else {
-        alert('No Spotify track found for this song.');
+        alert('SpotiFLAC search failed: ' + (res.data.error || 'Unknown error'));
       }
     } catch (error: any) {
-      console.error('Spotify search failed:', error);
+      console.error('SpotiFLAC search failed:', error);
+      alert('SpotiFLAC search failed: ' + (error.response?.data?.error || error.message));
     } finally {
-      setSearchingSpotifyId(null);
+      setSearchingSpotiflacId(null);
     }
   };
+
+  const handleSpotiflacDownload = async (fileId: string, track: SpotiflacTrack) => {
+    try {
+      const res = await axios.post(`${API_BASE}/spotiflac/download`, {
+        spotify_url: track.external_urls,
+        fileId,
+      });
+      if (res.data.success) {
+        // Refresh state so the matched pair may appear
+        if (res.data.state) setMatchState(res.data.state);
+        else await fetchMatchState();
+        return {
+          success: true,
+          chosen: res.data.chosen,
+          file: res.data.file,
+          message: res.data.message,
+          audio_report: res.data.audio_report,
+        };
+      } else {
+        alert('Download failed: ' + (res.data.error || 'Unknown error'));
+        return null;
+      }
+    } catch (error: any) {
+      console.error('SpotiFLAC download failed:', error);
+      alert('Download failed: ' + (error.response?.data?.error || error.message));
+      return null;
+    }
+  };
+
+  // ─────────────────────────────────────────────────────────────────────────
 
   const handleOrganizeAudioOnly = async () => {
     if (selectedAudioIds.length === 0) return;
@@ -403,18 +439,10 @@ function Dashboard() {
                     key={file.filename}
                     file={file}
                     color="purple"
-                    onSpotifySearch={() => handleSpotifySearch(file.id!, file.baseName)}
-                    searchingSpotify={searchingSpotifyId === file.id}
-                    onDownload={(q) =>
-                      handleDownload(
-                        file.id!,
-                        file.spotifyUrl || file.youtubeUrl || '',
-                        'audio',
-                        q,
-                        file.baseName
-                      )
-                    }
-                    downloading={downloadingId === file.id}
+                    onSpotiflacSearch={() => handleSpotiflacSearch(file.id!, file.baseName)}
+                    searchingSpotiflac={searchingSpotiflacId === file.id}
+                    spotiflacResults={spotiflacResultsMap[file.id!]}
+                    onSpotiflacDownload={(track) => handleSpotiflacDownload(file.id!, track)}
                   />
                 ))
               )}

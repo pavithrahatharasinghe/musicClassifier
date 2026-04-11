@@ -3,6 +3,7 @@ import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
 import dotenv from 'dotenv';
+import axios from 'axios';
 import youtubedl from 'youtube-dl-exec';
 import { LibraryService } from './services/library';
 import { OllamaService } from './services/ollama';
@@ -255,6 +256,73 @@ app.post('/api/spotify/:id', async (req, res) => {
   const result = await spotify.findTrackUrl(title);
   if (result) library.updateSpotifyUrl(fileId, result.url, result.previewUrl);
   res.json({ success: !!result, link: result?.url, previewUrl: result?.previewUrl, state: library.getMatchState() });
+});
+
+// ─── SpotiFLAC Proxy Routes ────────────────────────────────────────────────
+
+// POST /api/spotiflac/search  — search for tracks via the local SpotiFLAC API
+app.post('/api/spotiflac/search', async (req, res) => {
+  try {
+    const { query, limit = 8 } = req.body;
+    if (!query) return res.status(400).json({ success: false, error: 'query required' });
+
+    const url = `http://localhost:8080/spotiflac/srcsong/${encodeURIComponent(query)}?limit=${limit}`;
+    const upstream = await axios.get(url);
+    const data = upstream.data;
+    res.json({ success: true, tracks: data.tracks || [], count: data.count || 0 });
+  } catch (err: any) {
+    console.error('SpotiFLAC search error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/spotiflac/download  — download best FLAC via the local SpotiFLAC API
+app.post('/api/spotiflac/download', async (req, res) => {
+  try {
+    const { spotify_url, fileId } = req.body;
+    if (!spotify_url) return res.status(400).json({ success: false, error: 'spotify_url required' });
+
+    const outputDir = currentConfig.downloadDir || currentConfig.audioDir;
+
+    const upstream = await axios.post('http://localhost:8080/spotiflac/download-best', {
+      spotify_url,
+      strategy: 'best',
+      output_dir: outputDir,
+      allow_fallback: true,
+    });
+
+    const data = upstream.data;
+
+    if (!data.success) {
+      return res.status(500).json({ success: false, error: data.message || 'Download failed' });
+    }
+
+    // Rescan so the new FLAC appears in the library
+    library.syncDisk();
+
+    // Try to auto-link with the video file if fileId was passed
+    if (fileId && data.file) {
+      const dlPath = path.resolve(data.file);
+      const dlExt = path.extname(dlPath);
+      const dlBaseName = path.basename(dlPath, dlExt);
+      const audio = db.prepare("SELECT id FROM files WHERE (absolutePath = ? OR baseName = ?) AND type = 'Music'").get(dlPath, dlBaseName) as any;
+      if (audio) {
+        db.prepare("INSERT OR IGNORE INTO pairs (id, audioId, videoId, status) VALUES (?, ?, ?, 'downloaded')").run(`spf-${fileId}-${audio.id}`, audio.id, fileId);
+      }
+    }
+
+    res.json({
+      success: true,
+      file: data.file,
+      chosen: data.chosen,
+      audio_report: data.audio_report,
+      message: data.message,
+      state: library.getMatchState(),
+    });
+  } catch (err: any) {
+    console.error('SpotiFLAC download error:', err);
+    res.status(500).json({ success: false, error: err.response?.data?.message || err.message });
+  }
 });
 
 app.post('/api/download', async (req, res) => {
