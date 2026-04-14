@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom';
-import { Music, LayoutDashboard, Settings } from 'lucide-react';
+import { Music, LayoutDashboard, Settings, ShieldCheck } from 'lucide-react';
 
 function Sidebar() {
   return (
@@ -12,6 +12,7 @@ function Sidebar() {
       </div>
       <nav className="flex-1 p-4 space-y-1">
         <NavItem icon={<LayoutDashboard size={18} />} label="Workspace" to="/" />
+        <NavItem icon={<ShieldCheck size={18} />} label="Quality" to="/quality" />
         <NavItem icon={<Settings size={18} />} label="Settings" to="/settings" />
       </nav>
     </aside>

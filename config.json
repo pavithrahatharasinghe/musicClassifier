@@ -4,5 +4,6 @@
   "destDir": "D:\\Projects\\musicClassifier\\organized",
   "ollamaModel": "qwen2.5:14b",
   "downloadDir": "F:\\DLs",
-  "videoValidationEnabled": true
+  "videoValidationEnabled": true,
+  "qualityCheckDir": "F:\\DLs"
 }

@@ -17,6 +17,7 @@ const cors_1 = __importDefault(require("cors"));
 const path_1 = __importDefault(require("path"));
 const fs_1 = __importDefault(require("fs"));
 const dotenv_1 = __importDefault(require("dotenv"));
+const axios_1 = __importDefault(require("axios"));
 const youtube_dl_exec_1 = __importDefault(require("youtube-dl-exec"));
 const library_1 = require("./services/library");
 const ollama_1 = require("./services/ollama");
@@ -24,6 +25,7 @@ const internet_1 = require("./services/internet");
 const youtube_1 = require("./services/youtube");
 const spotify_1 = require("./services/spotify");
 const musicbrainz_1 = require("./services/musicbrainz");
+const qualityChecker_1 = require("./services/qualityChecker");
 const db_1 = require("./db");
 dotenv_1.default.config();
 const app = (0, express_1.default)();
@@ -89,19 +91,67 @@ app.get('/api/files', (req, res) => {
         res.status(500).json({ success: false, error: err.message });
     }
 });
-// POST /api/automatch - Run Ollama batch
+// POST /api/automatch - Run AI matching only on currently unmatched files (batched)
 app.post('/api/automatch', (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         const state = library.getMatchState();
-        if (state.unmatchedAudio.length > 0 && state.unmatchedVideo.length > 0) {
-            const model = currentConfig.ollamaModel || 'llama3';
-            const matches = yield ollama.findMatches(state.unmatchedAudio, state.unmatchedVideo, model);
-            library.addOllamaMatches(matches);
-            res.json({ success: true, state: library.getMatchState(), matches });
+        if (state.unmatchedAudio.length === 0 || state.unmatchedVideo.length === 0) {
+            return res.json({ success: true, state });
         }
-        else {
-            res.json({ success: true, state });
+        const model = currentConfig.ollamaModel || 'llama3';
+        // Send in batches of 50×50 so Ollama doesn't get overwhelmed by 500+ names at once
+        const BATCH = 50;
+        let allMatches = [];
+        const audioList = [...state.unmatchedAudio];
+        const videoList = [...state.unmatchedVideo];
+        for (let ai = 0; ai < audioList.length; ai += BATCH) {
+            const audioBatch = audioList.slice(ai, ai + BATCH);
+            for (let vi = 0; vi < videoList.length; vi += BATCH) {
+                const videoBatch = videoList.slice(vi, vi + BATCH);
+                try {
+                    const matches = yield ollama.findMatches(audioBatch, videoBatch, model);
+                    allMatches = allMatches.concat(matches);
+                }
+                catch (batchErr) {
+                    console.error(`Batch [${ai}-${ai + BATCH}] × [${vi}-${vi + BATCH}] failed:`, batchErr.message);
+                }
+            }
         }
+        library.addOllamaMatches(allMatches);
+        res.json({ success: true, state: library.getMatchState(), matches: allMatches });
+    }
+    catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+}));
+// POST /api/reset-matches - Clear all non-exact pairs and re-run AI matching from scratch
+app.post('/api/reset-matches', (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    try {
+        library.clearNonExactPairs();
+        const state = library.getMatchState();
+        if (state.unmatchedAudio.length === 0 || state.unmatchedVideo.length === 0) {
+            return res.json({ success: true, state });
+        }
+        const model = currentConfig.ollamaModel || 'llama3';
+        const BATCH = 50;
+        let allMatches = [];
+        const audioList = [...state.unmatchedAudio];
+        const videoList = [...state.unmatchedVideo];
+        for (let ai = 0; ai < audioList.length; ai += BATCH) {
+            const audioBatch = audioList.slice(ai, ai + BATCH);
+            for (let vi = 0; vi < videoList.length; vi += BATCH) {
+                const videoBatch = videoList.slice(vi, vi + BATCH);
+                try {
+                    const matches = yield ollama.findMatches(audioBatch, videoBatch, model);
+                    allMatches = allMatches.concat(matches);
+                }
+                catch (batchErr) {
+                    console.error(`Batch failed:`, batchErr.message);
+                }
+            }
+        }
+        library.addOllamaMatches(allMatches);
+        res.json({ success: true, state: library.getMatchState(), matches: allMatches });
     }
     catch (err) {
         res.status(500).json({ success: false, error: err.message });
@@ -194,6 +244,67 @@ app.post('/api/spotify/:id', (req, res) => __awaiter(void 0, void 0, void 0, fun
     if (result)
         library.updateSpotifyUrl(fileId, result.url, result.previewUrl);
     res.json({ success: !!result, link: result === null || result === void 0 ? void 0 : result.url, previewUrl: result === null || result === void 0 ? void 0 : result.previewUrl, state: library.getMatchState() });
+}));
+// ─── SpotiFLAC Proxy Routes ────────────────────────────────────────────────
+// POST /api/spotiflac/search  — search for tracks via the local SpotiFLAC API
+app.post('/api/spotiflac/search', (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    try {
+        const { query, limit = 8 } = req.body;
+        if (!query)
+            return res.status(400).json({ success: false, error: 'query required' });
+        const url = `http://localhost:8080/spotiflac/srcsong/${encodeURIComponent(query)}?limit=${limit}`;
+        const upstream = yield axios_1.default.get(url);
+        const data = upstream.data;
+        res.json({ success: true, tracks: data.tracks || [], count: data.count || 0 });
+    }
+    catch (err) {
+        console.error('SpotiFLAC search error:', err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+}));
+// POST /api/spotiflac/download  — download best FLAC via the local SpotiFLAC API
+app.post('/api/spotiflac/download', (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    var _a, _b;
+    try {
+        const { spotify_url, fileId } = req.body;
+        if (!spotify_url)
+            return res.status(400).json({ success: false, error: 'spotify_url required' });
+        const outputDir = currentConfig.downloadDir || currentConfig.audioDir;
+        const upstream = yield axios_1.default.post('http://localhost:8080/spotiflac/download-best', {
+            spotify_url,
+            strategy: 'best',
+            output_dir: outputDir,
+            allow_fallback: true,
+        });
+        const data = upstream.data;
+        if (!data.success) {
+            return res.status(500).json({ success: false, error: data.message || 'Download failed' });
+        }
+        // Rescan so the new FLAC appears in the library
+        library.syncDisk();
+        // Try to auto-link with the video file if fileId was passed
+        if (fileId && data.file) {
+            const dlPath = path_1.default.resolve(data.file);
+            const dlExt = path_1.default.extname(dlPath);
+            const dlBaseName = path_1.default.basename(dlPath, dlExt);
+            const audio = db_1.db.prepare("SELECT id FROM files WHERE (absolutePath = ? OR baseName = ?) AND type = 'Music'").get(dlPath, dlBaseName);
+            if (audio) {
+                db_1.db.prepare("INSERT OR IGNORE INTO pairs (id, audioId, videoId, status) VALUES (?, ?, ?, 'downloaded')").run(`spf-${fileId}-${audio.id}`, audio.id, fileId);
+            }
+        }
+        res.json({
+            success: true,
+            file: data.file,
+            chosen: data.chosen,
+            audio_report: data.audio_report,
+            message: data.message,
+            state: library.getMatchState(),
+        });
+    }
+    catch (err) {
+        console.error('SpotiFLAC download error:', err);
+        res.status(500).json({ success: false, error: ((_b = (_a = err.response) === null || _a === void 0 ? void 0 : _a.data) === null || _b === void 0 ? void 0 : _b.message) || err.message });
+    }
 }));
 app.post('/api/download', (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
@@ -342,6 +453,152 @@ app.post('/api/send-no-video', (req, res) => __awaiter(void 0, void 0, void 0, f
         else {
             res.status(500).json({ success: false, error: 'Failed to move file.' });
         }
+    }
+    catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+}));
+// ─── Quality Checker Routes ──────────────────────────────────────────────────
+// In-memory scan cache (resets on each full scan)
+let lastScanResults = [];
+let scanInProgress = false;
+let scanProgress = { done: 0, total: 0, currentFile: '' };
+// GET /api/quality/status — live progress during scan
+app.get('/api/quality/status', (_req, res) => {
+    res.json({ success: true, inProgress: scanInProgress, progress: scanProgress, count: lastScanResults.length });
+});
+// GET /api/quality/results — return cached last scan
+app.get('/api/quality/results', (_req, res) => {
+    res.json({ success: true, results: lastScanResults, inProgress: scanInProgress });
+});
+// POST /api/quality/scan — kick off a fresh scan (non-blocking; poll /status)
+app.post('/api/quality/scan', (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    var _a;
+    if (scanInProgress) {
+        return res.json({ success: false, error: 'Scan already in progress', progress: scanProgress });
+    }
+    const dir = ((_a = req.body) === null || _a === void 0 ? void 0 : _a.dir) || currentConfig.qualityCheckDir;
+    if (!dir) {
+        return res.status(400).json({ success: false, error: 'qualityCheckDir not configured. Set it in Settings first.' });
+    }
+    scanInProgress = true;
+    scanProgress = { done: 0, total: 0, currentFile: '' };
+    lastScanResults = [];
+    // Run async in background
+    (0, qualityChecker_1.scanDirectory)(dir, (done, total, currentFile) => {
+        scanProgress = { done, total, currentFile };
+    })
+        .then((results) => {
+        lastScanResults = results;
+    })
+        .catch((err) => {
+        console.error('Quality scan error:', err);
+    })
+        .finally(() => {
+        scanInProgress = false;
+    });
+    res.json({ success: true, message: 'Scan started', dir });
+}));
+// POST /api/quality/move — move a single file to its label sub-folder
+app.post('/api/quality/move', (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    try {
+        const { absolutePath, label } = req.body;
+        if (!absolutePath || !label)
+            return res.status(400).json({ success: false, error: 'absolutePath and label required' });
+        const baseDir = currentConfig.qualityCheckDir;
+        if (!baseDir)
+            return res.status(400).json({ success: false, error: 'qualityCheckDir not set' });
+        if (!fs_1.default.existsSync(absolutePath)) {
+            return res.status(404).json({ success: false, error: 'File not found: ' + absolutePath });
+        }
+        const newPath = (0, qualityChecker_1.moveFileByLabel)(absolutePath, baseDir, label);
+        // Update in cache
+        lastScanResults = lastScanResults.map((r) => r.absolutePath === absolutePath ? Object.assign(Object.assign({}, r), { absolutePath: newPath }) : r);
+        res.json({ success: true, newPath });
+    }
+    catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+}));
+// POST /api/quality/move-all — bulk move all cached results by label
+app.post('/api/quality/move-all', (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    try {
+        const { label } = req.body;
+        const baseDir = currentConfig.qualityCheckDir;
+        if (!baseDir)
+            return res.status(400).json({ success: false, error: 'qualityCheckDir not set' });
+        const toMove = label
+            ? lastScanResults.filter((r) => r.label === label)
+            : lastScanResults;
+        let moved = 0;
+        for (const r of toMove) {
+            if (!fs_1.default.existsSync(r.absolutePath))
+                continue;
+            try {
+                const np = (0, qualityChecker_1.moveFileByLabel)(r.absolutePath, baseDir, r.label);
+                r.absolutePath = np;
+                moved++;
+            }
+            catch ( /* skip locked/moved */_a) { /* skip locked/moved */ }
+        }
+        res.json({ success: true, moved });
+    }
+    catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+}));
+// POST /api/quality/ai-insight — Ollama verdict for a single file report
+app.post('/api/quality/ai-insight', (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    var _a;
+    try {
+        const { report } = req.body;
+        if (!report)
+            return res.status(400).json({ success: false, error: 'report required' });
+        const model = currentConfig.ollamaModel || 'llama3';
+        const prompt = `You are an audio quality expert. Analyze this FLAC file report and give a single short sentence verdict (max 20 words). Be direct and concise.
+
+File: ${report.filename}
+Artist: ${report.artist || 'Unknown'}
+Title: ${report.title || 'Unknown'}
+Bitrate: ${report.bitRate ? Math.round(report.bitRate / 1000) + ' kbps' : 'N/A'}
+Sample Rate: ${report.sampleRate ? report.sampleRate + ' Hz' : 'N/A'}
+Bit Depth: ${report.bitDepth || 'N/A'}-bit
+Channels: ${report.channels || 'N/A'}
+Clipping: ${report.hasClipping ? 'YES – clipping detected' : 'No'}
+Metadata: ${report.metadataOk ? 'Complete' : 'MISSING artist/title'}
+System Label: ${report.label.toUpperCase()} — ${report.labelReason}
+
+Verdict:`;
+        const ollamaRes = yield axios_1.default.post('http://localhost:11434/api/generate', {
+            model,
+            prompt,
+            stream: false,
+        }, { timeout: 30000 });
+        const insight = (((_a = ollamaRes.data) === null || _a === void 0 ? void 0 : _a.response) || '').trim();
+        // Patch cache
+        lastScanResults = lastScanResults.map((r) => r.id === report.id ? Object.assign(Object.assign({}, r), { aiInsight: insight }) : r);
+        res.json({ success: true, aiInsight: insight });
+    }
+    catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+}));
+// POST /api/quality/reanalyze — re-run quality check on a single file
+app.post('/api/quality/reanalyze', (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    try {
+        const { absolutePath } = req.body;
+        if (!absolutePath)
+            return res.status(400).json({ success: false, error: 'absolutePath required' });
+        if (!fs_1.default.existsSync(absolutePath))
+            return res.status(404).json({ success: false, error: 'File not found' });
+        const report = yield (0, qualityChecker_1.analyzeFile)(absolutePath);
+        // Update cache
+        const idx = lastScanResults.findIndex((r) => r.absolutePath === absolutePath);
+        if (idx >= 0)
+            lastScanResults[idx] = report;
+        else
+            lastScanResults.push(report);
+        res.json({ success: true, report });
     }
     catch (err) {
         res.status(500).json({ success: false, error: err.message });

@@ -11,6 +11,8 @@ import { InternetSearchService } from './services/internet';
 import { YouTubeService } from './services/youtube';
 import { SpotifyService } from './services/spotify';
 import { MusicBrainzService } from './services/musicbrainz';
+import { scanDirectory, analyzeFile, moveFileByLabel, computeSpectrum } from './services/qualityChecker';
+import type { QualityReport } from './types';
 import { db } from './db';
 import { AppConfig } from './types';
 
@@ -482,6 +484,184 @@ app.post('/api/send-no-video', async (req, res) => {
     } else {
       res.status(500).json({ success: false, error: 'Failed to move file.' });
     }
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── Quality Checker Routes ──────────────────────────────────────────────────
+
+// In-memory scan cache (resets on each full scan)
+let lastScanResults: QualityReport[] = [];
+let scanInProgress = false;
+let scanProgress = { done: 0, total: 0, currentFile: '' };
+
+// GET /api/quality/status — live progress during scan
+app.get('/api/quality/status', (_req, res) => {
+  res.json({ success: true, inProgress: scanInProgress, progress: scanProgress, count: lastScanResults.length });
+});
+
+// GET /api/quality/results — return cached last scan
+app.get('/api/quality/results', (_req, res) => {
+  res.json({ success: true, results: lastScanResults, inProgress: scanInProgress });
+});
+
+// POST /api/quality/scan — kick off a fresh scan (non-blocking; poll /status)
+app.post('/api/quality/scan', async (req, res) => {
+  if (scanInProgress) {
+    return res.json({ success: false, error: 'Scan already in progress', progress: scanProgress });
+  }
+  const dir = (req.body?.dir as string) || currentConfig.qualityCheckDir;
+  if (!dir) {
+    return res.status(400).json({ success: false, error: 'qualityCheckDir not configured. Set it in Settings first.' });
+  }
+
+  scanInProgress = true;
+  scanProgress = { done: 0, total: 0, currentFile: '' };
+  lastScanResults = [];
+
+  // Run async in background
+  scanDirectory(dir, (done, total, currentFile) => {
+    scanProgress = { done, total, currentFile };
+  })
+    .then((results) => {
+      lastScanResults = results;
+    })
+    .catch((err) => {
+      console.error('Quality scan error:', err);
+    })
+    .finally(() => {
+      scanInProgress = false;
+    });
+
+  res.json({ success: true, message: 'Scan started', dir });
+});
+
+// POST /api/quality/move — move a single file to its label sub-folder
+app.post('/api/quality/move', async (req, res) => {
+  try {
+    const { absolutePath, label } = req.body as { absolutePath: string; label: string };
+    if (!absolutePath || !label) return res.status(400).json({ success: false, error: 'absolutePath and label required' });
+
+    const baseDir = currentConfig.qualityCheckDir;
+    if (!baseDir) return res.status(400).json({ success: false, error: 'qualityCheckDir not set' });
+
+    if (!fs.existsSync(absolutePath)) {
+      return res.status(404).json({ success: false, error: 'File not found: ' + absolutePath });
+    }
+
+    const newPath = moveFileByLabel(absolutePath, baseDir, label as any);
+
+    // Update in cache
+    lastScanResults = lastScanResults.map((r) =>
+      r.absolutePath === absolutePath ? { ...r, absolutePath: newPath } : r
+    );
+
+    res.json({ success: true, newPath });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/quality/move-all — bulk move all cached results by label
+app.post('/api/quality/move-all', async (req, res) => {
+  try {
+    const { label } = req.body as { label?: string };
+    const baseDir = currentConfig.qualityCheckDir;
+    if (!baseDir) return res.status(400).json({ success: false, error: 'qualityCheckDir not set' });
+
+    const toMove = label
+      ? lastScanResults.filter((r) => r.label === label)
+      : lastScanResults;
+
+    let moved = 0;
+    for (const r of toMove) {
+      if (!fs.existsSync(r.absolutePath)) continue;
+      try {
+        const np = moveFileByLabel(r.absolutePath, baseDir, r.label);
+        r.absolutePath = np;
+        moved++;
+      } catch { /* skip locked/moved */ }
+    }
+
+    res.json({ success: true, moved });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/quality/ai-insight — Ollama verdict for a single file report
+app.post('/api/quality/ai-insight', async (req, res) => {
+  try {
+    const { report } = req.body as { report: QualityReport };
+    if (!report) return res.status(400).json({ success: false, error: 'report required' });
+
+    const model = currentConfig.ollamaModel || 'llama3';
+    const prompt = `You are an audio quality expert. Analyze this FLAC file report and give a single short sentence verdict (max 20 words). Be direct and concise.
+
+File: ${report.filename}
+Artist: ${report.artist || 'Unknown'}
+Title: ${report.title || 'Unknown'}
+Bitrate: ${report.bitRate ? Math.round(report.bitRate / 1000) + ' kbps' : 'N/A'}
+Sample Rate: ${report.sampleRate ? report.sampleRate + ' Hz' : 'N/A'}
+Bit Depth: ${report.bitDepth || 'N/A'}-bit
+Channels: ${report.channels || 'N/A'}
+Clipping: ${report.hasClipping ? 'YES – clipping detected' : 'No'}
+Metadata: ${report.metadataOk ? 'Complete' : 'MISSING artist/title'}
+System Label: ${report.label.toUpperCase()} — ${report.labelReason}
+
+Verdict:`;
+
+    const ollamaRes = await axios.post('http://localhost:11434/api/generate', {
+      model,
+      prompt,
+      stream: false,
+    }, { timeout: 30000 });
+
+    const insight = (ollamaRes.data?.response || '').trim();
+
+    // Patch cache
+    lastScanResults = lastScanResults.map((r) =>
+      r.id === report.id ? { ...r, aiInsight: insight } : r
+    );
+
+    res.json({ success: true, aiInsight: insight });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/quality/reanalyze — re-run quality check on a single file
+app.post('/api/quality/reanalyze', async (req, res) => {
+  try {
+    const { absolutePath } = req.body as { absolutePath: string };
+    if (!absolutePath) return res.status(400).json({ success: false, error: 'absolutePath required' });
+    if (!fs.existsSync(absolutePath)) return res.status(404).json({ success: false, error: 'File not found' });
+
+    const report = await analyzeFile(absolutePath);
+
+    // Update cache
+    const idx = lastScanResults.findIndex((r) => r.absolutePath === absolutePath);
+    if (idx >= 0) lastScanResults[idx] = report;
+    else lastScanResults.push(report);
+
+    res.json({ success: true, report });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/quality/spectrum — compute spectrogram data for a single file (on-demand)
+app.post('/api/quality/spectrum', async (req, res) => {
+  try {
+    const { absolutePath, fftSize = 4096 } = req.body as { absolutePath: string; fftSize?: number };
+    if (!absolutePath) return res.status(400).json({ success: false, error: 'absolutePath required' });
+    if (!fs.existsSync(absolutePath)) return res.status(404).json({ success: false, error: 'File not found' });
+
+    const result = await computeSpectrum(absolutePath, fftSize);
+    if (!result) return res.status(422).json({ success: false, error: 'Could not compute spectrum' });
+
+    res.json({ success: true, spectrum: result.data, meta: result.meta });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }

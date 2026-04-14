@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Save, Loader2, FolderOpen, Cpu, Video } from 'lucide-react';
+import { Save, Loader2, FolderOpen, Cpu, Video, ShieldCheck } from 'lucide-react';
 import type { AppConfig } from '../types';
 
 const API_BASE = 'http://localhost:3001/api';
@@ -13,6 +13,7 @@ function Settings() {
     downloadDir: '',
     ollamaModel: 'llama3',
     noVideoDestDir: '',
+    qualityCheckDir: '',
   });
   const [configSaving, setConfigSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
@@ -173,6 +174,26 @@ function Settings() {
               value={config.noVideoDestDir || ''}
               onChange={(v) => setConfig({ ...config, noVideoDestDir: v })}
               placeholder="e.g. D:\NoVideoSongs"
+            />
+          </section>
+
+          {/* Quality Analysis */}
+          <section className="bg-gray-900/80 border border-gray-800 rounded-xl p-5 space-y-4">
+            <div>
+              <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+                <ShieldCheck size={15} className="text-emerald-400" /> Quality Analysis
+              </h2>
+              <p className="text-xs text-gray-500 mt-1">
+                Directory scanned by the Quality Analyzer tab. Files are analyzed for FLAC metadata, bitrate, and audio clipping.
+              </p>
+            </div>
+
+            <Field
+              label="Quality Check Directory"
+              description="Folder containing FLAC files to quality-check. Sub-folders (validated, recheck, etc.) will be created here when files are moved."
+              value={config.qualityCheckDir || ''}
+              onChange={(v) => setConfig({ ...config, qualityCheckDir: v })}
+              placeholder="e.g. H:\FLAC Musics\inbox"
             />
           </section>
 
