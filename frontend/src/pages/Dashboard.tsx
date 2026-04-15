@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Wand2, FileAudio, FileVideo, CheckCircle2, RefreshCw, Loader2 } from 'lucide-react';
+import { Wand2, FileAudio, FileVideo, CheckCircle2, RefreshCw, Loader2, ArrowRight } from 'lucide-react';
 import type { MatchMakerState, SpotiflacTrack } from '../types';
 import FileCard from '../components/FileCard';
 import MatchedPairCard from '../components/MatchedPairCard';
@@ -29,6 +29,10 @@ function Dashboard() {
   // SpotiFLAC state — map of fileId → track results (null while not yet searched)
   const [spotiflacResultsMap, setSpotiflacResultsMap] = useState<Record<string, SpotiflacTrack[]>>({});
   const [searchingSpotiflacId, setSearchingSpotiflacId] = useState<string | null>(null);
+
+  // Drag-and-drop manual matching
+  const [draggedAudioId, setDraggedAudioId] = useState<string | null>(null);
+  const [dragOverVideoId, setDragOverVideoId] = useState<string | null>(null);
 
   useEffect(() => {
     fetchMatchState();
@@ -259,6 +263,22 @@ function Dashboard() {
     }
   };
 
+  const handleManualMatch = async (audioId: string, videoId: string) => {
+    try {
+      const res = await axios.post(`${API_BASE}/manual-match`, { audioId, videoId });
+      if (res.data.success) {
+        setMatchState(res.data.state);
+        setDraggedAudioId(null);
+        setDragOverVideoId(null);
+      } else {
+        alert('Manual match failed: ' + (res.data.error || 'Unknown'));
+      }
+    } catch (error: any) {
+      console.error('Manual match failed:', error);
+      alert('Manual match failed: ' + (error.response?.data?.error || error.message));
+    }
+  };
+
   return (
     <>
       {/* Header */}
@@ -342,6 +362,11 @@ function Dashboard() {
                   {matchState.unmatchedAudio.length}
                 </span>
               </div>
+              {matchState.unmatchedVideo.length > 0 && matchState.unmatchedAudio.length > 0 && (
+                <p className="text-[10px] text-gray-600 flex items-center gap-1">
+                  <ArrowRight size={9} className="text-gray-600" /> Drag an audio card onto a video card to manually match them
+                </p>
+              )}
               {selectedAudioIds.length > 0 && (
                 <button
                   onClick={handleOrganizeAudioOnly}
@@ -381,6 +406,9 @@ function Dashboard() {
                     checkingVideo={checkingVideoId === file.id}
                     onSendNoVideo={() => handleSendNoVideo(file.id!, file.filename, file.baseName)}
                     sendingNoVideo={sendingNoVideoId === file.id}
+                    draggable
+                    onDragStart={() => setDraggedAudioId(file.id!)}
+                    onDragEnd={() => { setDraggedAudioId(null); setDragOverVideoId(null); }}
                   />
                 ))
               )}
@@ -420,7 +448,9 @@ function Dashboard() {
           </div>
 
           {/* ── Unmatched Video ── */}
-          <div className="flex flex-col bg-gray-900/80 border border-gray-800 rounded-xl overflow-hidden">
+          <div className={`flex flex-col bg-gray-900/80 border rounded-xl overflow-hidden transition-colors ${
+            draggedAudioId ? 'border-purple-500/50 shadow-[0_0_20px_rgba(168,85,247,0.12)]' : 'border-gray-800'
+          }`}>
             <div className="px-4 py-3 border-b border-gray-800 flex justify-between items-center">
               <h3 className="text-sm font-semibold text-gray-200 flex items-center gap-2">
                 <FileVideo size={15} className="text-purple-400" />
@@ -430,6 +460,14 @@ function Dashboard() {
                 {matchState.unmatchedVideo.length}
               </span>
             </div>
+
+            {/* Drag hint banner */}
+            {draggedAudioId && (
+              <div className="mx-3 mt-3 py-2 px-3 rounded-lg bg-purple-500/15 border border-purple-500/30 text-purple-300 text-[11px] font-semibold flex items-center gap-1.5 animate-pulse">
+                <ArrowRight size={12} /> Drop audio onto a video card below to manually match
+              </div>
+            )}
+
             <div className="flex-1 overflow-y-auto p-3 space-y-2">
               {matchState.unmatchedVideo.length === 0 ? (
                 <div className="text-center text-xs text-gray-600 mt-12">No unmatched videos.</div>
@@ -443,6 +481,17 @@ function Dashboard() {
                     searchingSpotiflac={searchingSpotiflacId === file.id}
                     spotiflacResults={spotiflacResultsMap[file.id!]}
                     onSpotiflacDownload={(track) => handleSpotiflacDownload(file.id!, track)}
+                    isDragTarget={!!draggedAudioId}
+                    isDragOver={dragOverVideoId === file.id}
+                    onDragOver={(e) => { e.preventDefault(); setDragOverVideoId(file.id!); }}
+                    onDragLeave={(e) => {
+                      // Already filtered in FileCard, but guard here too
+                      setDragOverVideoId(null);
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      if (draggedAudioId) handleManualMatch(draggedAudioId, file.id!);
+                    }}
                   />
                 ))
               )}

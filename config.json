@@ -1,8 +1,8 @@
 {
-  "audioDir": "H:\\FLAC Musics\\recheck_folder_1",
+  "audioDir": "H:\\FLAC Musics\\Checked",
   "videoDir": "F:\\Videos\\KPOP - JPOP",
   "destDir": "D:\\Projects\\musicClassifier\\organized",
-  "ollamaModel": "qwen2.5:14b",
+  "ollamaModel": "llama3.2:1b",
   "downloadDir": "F:\\DLs",
   "videoValidationEnabled": true,
   "qualityCheckDir": "F:\\DLs"

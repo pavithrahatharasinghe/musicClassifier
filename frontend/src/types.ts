@@ -27,6 +27,7 @@ export interface FileItem {
   isrc?: string | null;
   previewUrl?: string | null;
   videoStatus?: 'available' | 'unavailable' | 'unknown' | null;
+  qualityLabel?: 'lossless' | 'standard' | 'recheck' | 'invalid' | null;
 }
 
 export interface OllamaClassification {

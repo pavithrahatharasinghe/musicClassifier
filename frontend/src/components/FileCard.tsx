@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import axios from 'axios';
 import {
   FileAudio, FileVideo, Video, VideoOff, HelpCircle, Send, Loader2,
-  Music2, Clock, Download, CheckCircle2, AlertCircle,
+  Music2, Clock, Download, CheckCircle2, AlertCircle, Play, Pause, X,
 } from 'lucide-react';
 import type { FileItem, SpotiflacTrack } from '../types';
 
@@ -50,6 +50,45 @@ interface FileCardProps {
   checkingVideo?: boolean;
   onSendNoVideo?: () => void;
   sendingNoVideo?: boolean;
+  // Drag-and-drop manual matching
+  draggable?: boolean;
+  onDragStart?: () => void;
+  onDragEnd?: () => void;
+  isDragTarget?: boolean;   // true while ANY audio card is being dragged (video cards only)
+  isDragOver?: boolean;     // true when THIS video card is the current drag-over target
+  onDragOver?: (e: React.DragEvent) => void;
+  onDragLeave?: (e: React.DragEvent) => void;
+  onDrop?: (e: React.DragEvent) => void;
+}
+
+// ── Tooltip component ─────────────────────────────────────────────────────────
+function TitleTooltip({ text, children }: { text: string; children: React.ReactNode }) {
+  const [show, setShow] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  return (
+    <div
+      ref={ref}
+      className="relative min-w-0"
+      onMouseEnter={() => setShow(true)}
+      onMouseLeave={() => setShow(false)}
+    >
+      {children}
+      {show && (
+        <div
+          className="absolute left-0 bottom-full mb-1.5 z-50 max-w-xs pointer-events-none"
+          style={{ filter: 'drop-shadow(0 4px 12px rgba(0,0,0,0.6))' }}
+        >
+          <div className="bg-gray-800 border border-gray-600 text-gray-100 text-[11px] font-medium rounded-lg px-3 py-2 leading-snug whitespace-normal break-words">
+            {text}
+          </div>
+          {/* Arrow */}
+          <div className="absolute left-3 top-full w-0 h-0"
+            style={{ borderLeft: '5px solid transparent', borderRight: '5px solid transparent', borderTop: '5px solid #4B5563' }} />
+        </div>
+      )}
+    </div>
+  );
 }
 
 function FileCard({
@@ -69,7 +108,16 @@ function FileCard({
   checkingVideo,
   onSendNoVideo,
   sendingNoVideo,
+  draggable: isDraggable,
+  onDragStart,
+  onDragEnd,
+  isDragTarget,
+  isDragOver,
+  onDragOver,
+  onDragLeave,
+  onDrop,
 }: FileCardProps) {
+  const cardRef = useRef<HTMLDivElement>(null);
   const Icon = color === 'blue' ? FileAudio : FileVideo;
   const isAudio = color === 'blue';
 
@@ -81,6 +129,11 @@ function FileCard({
   // Per-track download status within this card
   const [downloadResults, setDownloadResults] = useState<Record<string, SpotiflacDownloadResult | 'error'>>({});
   const [localDownloadingTrackId, setLocalDownloadingTrackId] = useState<string | null>(null);
+
+  // Local media player state
+  const [showLocalPlayer, setShowLocalPlayer] = useState(false);
+  const mediaRef = useRef<HTMLAudioElement | HTMLVideoElement | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
 
   useEffect(() => {
     if (isExpanded && !formats && !loadingFormats) {
@@ -105,19 +158,53 @@ function FileCard({
     }
   }, [isExpanded, file.youtubeUrl]);
 
+  // Close player when card unmounts
+  useEffect(() => {
+    return () => {
+      if (mediaRef.current) {
+        mediaRef.current.pause();
+      }
+    };
+  }, []);
+
+  const streamUrl = file.id ? `${API_BASE}/stream/${file.id}` : null;
+
+  function toggleLocalPlayer() {
+    if (showLocalPlayer) {
+      mediaRef.current?.pause();
+      setIsPlaying(false);
+      setShowLocalPlayer(false);
+    } else {
+      setShowLocalPlayer(true);
+    }
+  }
+
+  function handleMediaPlay() { setIsPlaying(true); }
+  function handleMediaPause() { setIsPlaying(false); }
+
   const videoStatus = file.videoStatus;
 
   const borderColor = selected
     ? 'border-indigo-500 shadow-[0_0_8px_rgba(99,102,241,0.25)]'
+    : isDragOver
+    ? 'border-purple-400 shadow-[0_0_12px_rgba(168,85,247,0.35)]'
+    : isDragTarget && !isAudio
+    ? 'border-purple-500/40 border-dashed'
     : isAudio
     ? 'border-blue-500/15 hover:border-blue-500/35'
     : 'border-purple-500/15 hover:border-purple-500/35';
 
   const bgColor = selected
     ? 'bg-indigo-500/5'
+    : isDragOver
+    ? 'bg-purple-500/10'
     : isAudio
     ? 'bg-blue-500/5'
     : 'bg-purple-500/5';
+
+  // Quality badge config
+  const ql = file.qualityLabel;
+  const qualityBad = ql === 'recheck' || ql === 'invalid';
 
   async function handleTrackDownload(track: SpotiflacTrack) {
     if (!onSpotiflacDownload) return;
@@ -139,7 +226,58 @@ function FileCard({
   const showSpotiflacPanel = !isAudio && (spotiflacResults !== undefined && spotiflacResults !== null);
 
   return (
-    <div className={`flex flex-col rounded-lg border transition-all duration-150 overflow-hidden ${borderColor} ${bgColor}`}>
+    <div
+      ref={cardRef}
+      className={`flex flex-col rounded-lg border transition-all duration-150 overflow-hidden relative ${borderColor} ${bgColor}`}
+      draggable={isDraggable}
+      onDragStart={(e) => {
+        e.dataTransfer.effectAllowed = 'link';
+        onDragStart?.();
+      }}
+      onDragEnd={onDragEnd}
+      onDragOver={(e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'link';
+        onDragOver?.(e);
+      }}
+      onDragLeave={(e) => {
+        // Only fire leave if cursor truly left the card (not just entered a child)
+        if (cardRef.current && cardRef.current.contains(e.relatedTarget as Node)) return;
+        onDragLeave?.(e);
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        onDrop?.(e);
+      }}
+    >
+      {/* Drop-zone hint overlay — shown on video cards when an audio card is being dragged */}
+      {isDragTarget && !isAudio && (
+        <div className={`absolute inset-0 z-10 pointer-events-none flex flex-col items-center justify-center gap-1 rounded-lg transition-all ${
+          isDragOver
+            ? 'bg-purple-500/20 border-2 border-purple-400'
+            : 'bg-purple-500/5'
+        }`}>
+          {isDragOver && (
+            <>
+              <Play size={18} className="text-purple-300 animate-pulse" />
+              <span className="text-[11px] font-bold text-purple-300">Drop to match</span>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Quality warning banner */}
+      {qualityBad && (
+        <div className={`flex items-center gap-1.5 px-3 py-1 text-[10px] font-bold ${
+          ql === 'invalid'
+            ? 'bg-red-500/15 text-red-400 border-b border-red-500/20'
+            : 'bg-amber-500/15 text-amber-400 border-b border-amber-500/20'
+        }`}>
+          <AlertCircle size={10} />
+          {ql === 'invalid' ? 'Bad Quality — Invalid Bitrate' : 'Needs Recheck'}
+        </div>
+      )}
       {/* Main row */}
       <div className="p-3 flex justify-between items-start gap-2">
         <div className="flex items-start gap-2.5 overflow-hidden min-w-0">
@@ -152,16 +290,40 @@ function FileCard({
             />
           )}
           <Icon size={16} className={`shrink-0 mt-0.5 ${isAudio ? 'text-blue-400' : 'text-purple-400'}`} />
-          <div className="min-w-0">
-            <div className="text-xs font-medium text-gray-200 truncate leading-tight" title={file.filename}>
-              {file.baseName}
+          <TitleTooltip text={file.baseName}>
+            <div className="min-w-0">
+              <div className="text-xs font-medium text-gray-200 truncate leading-tight">
+                {file.baseName}
+              </div>
+              <div className="text-[10px] text-gray-500 mt-0.5 font-mono">{file.extension.toUpperCase()}</div>
             </div>
-            <div className="text-[10px] text-gray-500 mt-0.5 font-mono">{file.extension.toUpperCase()}</div>
-          </div>
+          </TitleTooltip>
         </div>
 
         {/* Action buttons */}
         <div className="shrink-0 flex items-center gap-1.5">
+          {/* Local play/pause button — always shown when we have a fileId */}
+          {streamUrl && (
+            <button
+              onClick={toggleLocalPlayer}
+              title={showLocalPlayer ? 'Close player' : `Play ${isAudio ? 'audio' : 'video'}`}
+              className={`flex items-center gap-1 px-2 py-1 border rounded text-[10px] font-medium transition ${
+                showLocalPlayer
+                  ? isAudio
+                    ? 'bg-blue-600/20 border-blue-500/50 text-blue-300'
+                    : 'bg-purple-600/20 border-purple-500/50 text-purple-300'
+                  : 'bg-gray-800 border-gray-700 hover:border-gray-500 text-gray-400 hover:text-gray-200'
+              }`}
+            >
+              {showLocalPlayer
+                ? isPlaying
+                  ? <Pause size={9} />
+                  : <X size={9} />
+                : <Play size={9} />}
+              {showLocalPlayer ? (isPlaying ? 'Pause' : 'Close') : 'Play'}
+            </button>
+          )}
+
           {/* Audio cards: Find Video button */}
           {isAudio && onYoutubeSearch && !isExpanded && (
             <button
@@ -200,6 +362,37 @@ function FileCard({
           )}
         </div>
       </div>
+
+      {/* Local media player panel */}
+      {showLocalPlayer && streamUrl && (
+        <div className={`px-3 pb-3 pt-0 border-t border-gray-700/40 ${isAudio ? 'bg-blue-500/3' : 'bg-purple-500/3'}`}>
+          {isAudio ? (
+            <audio
+              ref={mediaRef as React.RefObject<HTMLAudioElement>}
+              src={streamUrl}
+              controls
+              autoPlay
+              onPlay={handleMediaPlay}
+              onPause={handleMediaPause}
+              onEnded={handleMediaPause}
+              className="w-full mt-2.5"
+              style={{ height: 36, accentColor: '#60a5fa' }}
+            />
+          ) : (
+            <video
+              ref={mediaRef as React.RefObject<HTMLVideoElement>}
+              src={streamUrl}
+              controls
+              autoPlay
+              onPlay={handleMediaPlay}
+              onPause={handleMediaPause}
+              onEnded={handleMediaPause}
+              className="w-full mt-2.5 rounded overflow-hidden bg-black aspect-video"
+              style={{ maxHeight: 220 }}
+            />
+          )}
+        </div>
+      )}
 
       {/* Video status badge row */}
       {isAudio && videoStatus && (
@@ -290,9 +483,11 @@ function FileCard({
 
                       {/* Track info */}
                       <div className="flex-1 min-w-0">
-                        <div className="text-[11px] font-semibold text-gray-100 truncate leading-tight">
-                          {track.name}
-                        </div>
+                        <TitleTooltip text={`${track.name} · ${track.artists}`}>
+                          <div className="text-[11px] font-semibold text-gray-100 truncate leading-tight">
+                            {track.name}
+                          </div>
+                        </TitleTooltip>
                         <div className="text-[10px] text-gray-400 truncate">{track.artists}</div>
                         <div className="text-[9px] text-gray-600 truncate mt-0.5">{track.album_name}</div>
 

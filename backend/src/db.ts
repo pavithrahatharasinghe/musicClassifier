@@ -57,4 +57,12 @@ try {
   // column likely exists
 }
 
+// Migration for adding qualityLabel if missing
+try {
+  db.exec("ALTER TABLE files ADD COLUMN qualityLabel TEXT;");
+  console.log('✅ SQLite Migration: added qualityLabel column');
+} catch (e) {
+  // column likely exists
+}
+
 console.log('✅ SQLite Database Initialized');

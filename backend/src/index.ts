@@ -526,6 +526,11 @@ app.post('/api/quality/scan', async (req, res) => {
   })
     .then((results) => {
       lastScanResults = results;
+      // Persist quality labels to DB so Dashboard can surface warnings
+      const updateLabel = db.prepare('UPDATE files SET qualityLabel = ? WHERE absolutePath = ?');
+      for (const r of results) {
+        try { updateLabel.run(r.label, r.absolutePath); } catch { /* row may not exist in files table */ }
+      }
     })
     .catch((err) => {
       console.error('Quality scan error:', err);
@@ -665,6 +670,74 @@ app.post('/api/quality/spectrum', async (req, res) => {
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
+});
+
+// ─── Local media streaming (supports HTTP Range requests for seek) ────────────
+app.get('/api/stream/:fileId', (req, res) => {
+  try {
+    const { fileId } = req.params;
+    const row = db.prepare('SELECT absolutePath FROM files WHERE id = ?').get(fileId) as any;
+    if (!row) return res.status(404).json({ success: false, error: 'File not found' });
+
+    const filePath = row.absolutePath as string;
+    if (!fs.existsSync(filePath)) return res.status(404).json({ success: false, error: 'File missing on disk' });
+
+    const stat = fs.statSync(filePath);
+    const fileSize = stat.size;
+    const ext = path.extname(filePath).toLowerCase().replace('.', '');
+
+    // Determine MIME type
+    const mimeMap: Record<string, string> = {
+      mp3: 'audio/mpeg', flac: 'audio/flac', wav: 'audio/wav', m4a: 'audio/mp4', aac: 'audio/aac',
+      ogg: 'audio/ogg', opus: 'audio/ogg',
+      mp4: 'video/mp4', mkv: 'video/x-matroska', webm: 'video/webm', avi: 'video/x-msvideo',
+      mov: 'video/quicktime', wmv: 'video/x-ms-wmv',
+    };
+    const contentType = mimeMap[ext] || 'application/octet-stream';
+
+    const rangeHeader = req.headers.range;
+    if (rangeHeader) {
+      const parts = rangeHeader.replace(/bytes=/, '').split('-');
+      const start = parseInt(parts[0], 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+      const chunkSize = end - start + 1;
+
+      res.writeHead(206, {
+        'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+        'Accept-Ranges': 'bytes',
+        'Content-Length': chunkSize,
+        'Content-Type': contentType,
+      });
+      fs.createReadStream(filePath, { start, end }).pipe(res);
+    } else {
+      res.writeHead(200, {
+        'Content-Length': fileSize,
+        'Content-Type': contentType,
+        'Accept-Ranges': 'bytes',
+      });
+      fs.createReadStream(filePath).pipe(res);
+    }
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+// ─── Manual Drag-and-Drop Match ───────────────────────────────────────────────
+app.post('/api/manual-match', (req, res) => {
+  const { audioId, videoId } = req.body;
+  if (!audioId || !videoId) return res.status(400).json({ success: false, error: 'audioId and videoId required' });
+
+  const audio = db.prepare("SELECT id FROM files WHERE id = ? AND type = 'Music'").get(audioId) as any;
+  const video = db.prepare("SELECT id FROM files WHERE id = ? AND type = 'Video'").get(videoId) as any;
+  if (!audio) return res.status(404).json({ success: false, error: 'Audio file not found' });
+  if (!video) return res.status(404).json({ success: false, error: 'Video file not found' });
+
+  // Remove any existing pairs involving these files so we can re-link cleanly
+  db.prepare('DELETE FROM pairs WHERE audioId = ? OR videoId = ?').run(audioId, videoId);
+
+  const pairId = `manual-${audioId}-${videoId}`;
+  db.prepare("INSERT OR REPLACE INTO pairs (id, audioId, videoId, status) VALUES (?, ?, ?, 'manual')").run(pairId, audioId, videoId);
+
+  res.json({ success: true, state: library.getMatchState() });
 });
 
 app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
