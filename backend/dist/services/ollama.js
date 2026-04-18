@@ -102,12 +102,16 @@ class OllamaService {
         return __awaiter(this, void 0, void 0, function* () {
             var _a, _b, _c;
             try {
-                const prompt = `You are a music and video classification assistant. Analyze the following filename: "${filename}". 
+                const prompt = `You are a music and video classification assistant. Analyze the following filename: "${filename}".
       Return ONLY a valid JSON object with exactly these fields:
-      - "genre": the inferred genre of the track (e.g. "K-Pop", "J-Pop", "Pop", "Unknown").
+      - "genre": MUST be exactly one of: "K-Pop", "J-Pop", or "English". No other genre is allowed.
+        * Use "K-Pop" for Korean-language or Korean-origin pop music.
+        * Use "J-Pop" for Japanese-language or Japanese-origin pop music.
+        * Use "English" for any Western / English-language artist.
+        * If unsure, default to "English".
       - "cleanName": the clean "Artist - Title" format reconstructed from the filename.
       - "matchConfidence": a number between 0 and 1 indicating how confident you are.
-      
+
       Do not include any other text, code blocks, or markdown. Only the raw JSON object.`;
                 const response = yield axios_1.default.post(`${this.baseUrl}/api/generate`, {
                     model: model || 'llama3',
@@ -168,24 +172,28 @@ class OllamaService {
       ${JSON.stringify(internetMetadata)}
 
       Task: Based on the filename and the internet data, classify the final destination for this file.
-      Rules for "verifiedCategory":
-      - It MUST be a high-level folder name like "Pop", "K-Pop", "J-Pop", "Hip-Hop", "English", "Rock", etc.
-      - If it is a Western/English artist (like Taylor Swift or Ed Sheeran), use "English".
-      - If it is Korean pop, use "K-Pop". If Japanese, "J-Pop".
+
+      Rules for "verifiedCategory" — CRITICAL:
+      - The value MUST be exactly one of these three strings: "K-Pop", "J-Pop", or "English".
+      - NO other categories are allowed (not "Rock", "Pop", "Hip-Hop", "R&B", etc.).
+      - Use "K-Pop" for Korean-origin pop artists (e.g. BTS, BLACKPINK, aespa).
+      - Use "J-Pop" for Japanese-origin pop artists (e.g. YOASOBI, Ado, LiSA).
+      - Use "English" for all Western / English-language artists (e.g. Taylor Swift, Ed Sheeran, Ariana Grande).
+      - If in doubt, use "English".
 
       Rules for "isOfficialVideo":
-      - Evaluate the RAW filename. If it contains words like "Official Video", "MV", "Music Video", true. Else false.
+      - Evaluate the RAW filename. If it contains words like "Official Video", "MV", "Music Video", set true. Else false.
 
       Rules for "cleanName":
       - Provide the official "Artist - Track" string (e.g., "Taylor Swift - Blank Space").
 
       Return ONLY a valid JSON object:
       {
-        "verifiedCategory": "string",
+        "verifiedCategory": "K-Pop" | "J-Pop" | "English",
         "isOfficialVideo": boolean,
         "cleanName": "string"
       }
-      Do not include any other text format.`;
+      Do not include any other text or markdown.`;
                 const response = yield axios_1.default.post(`${this.baseUrl}/api/generate`, {
                     model: model || 'llama3',
                     prompt: prompt,

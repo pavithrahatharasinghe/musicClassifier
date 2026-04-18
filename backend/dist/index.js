@@ -306,6 +306,132 @@ app.post('/api/spotiflac/download', (req, res) => __awaiter(void 0, void 0, void
         res.status(500).json({ success: false, error: ((_b = (_a = err.response) === null || _a === void 0 ? void 0 : _a.data) === null || _b === void 0 ? void 0 : _b.message) || err.message });
     }
 }));
+app.post('/api/unified-download', (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    try {
+        const { url } = req.body;
+        if (!url)
+            return res.status(400).json({ success: false, error: 'URL required' });
+        let spotifyUrl = '';
+        let youtubeUrl = '';
+        let trackName = '';
+        let artistName = '';
+        // 1. Identify URL type and gather metadata
+        if (url.includes('spotify.com')) {
+            spotifyUrl = url;
+            const info = yield spotify.getTrackInfoByUrl(url);
+            if (info) {
+                trackName = info.name;
+                artistName = info.artists.join(', ');
+                // Find corresponding YouTube video
+                const ytResult = yield youtube.findOfficialVideoSync(`${trackName} ${artistName}`);
+                if (ytResult) {
+                    youtubeUrl = ytResult.url;
+                }
+            }
+            else {
+                return res.status(404).json({ success: false, error: 'Could not fetch Spotify track info' });
+            }
+        }
+        else if (url.includes('youtube.com') || url.includes('youtu.be')) {
+            youtubeUrl = url;
+            // Get title via youtubedl
+            const ytData = yield (0, youtube_dl_exec_1.default)(url, { dumpJson: true, noWarnings: true, noCheckCertificates: true });
+            if (ytData && ytData.title) {
+                // Clean title and search Spotify
+                const cleanTitle = yield ollama.cleanQuery(ytData.title, currentConfig.ollamaModel || 'llama3');
+                const spResult = yield spotify.findTrackUrl(cleanTitle || ytData.title);
+                if (spResult) {
+                    spotifyUrl = spResult.url;
+                }
+            }
+        }
+        else {
+            return res.status(400).json({ success: false, error: 'Must be a YouTube or Spotify URL' });
+        }
+        // 2. Trigger FLAC download if we have a Spotify URL
+        let downloadedAudioPath = '';
+        if (spotifyUrl) {
+            try {
+                const outputDir = currentConfig.downloadDir || currentConfig.audioDir;
+                const upstream = yield axios_1.default.post('http://localhost:8080/spotiflac/download-best', {
+                    spotify_url: spotifyUrl,
+                    strategy: 'best',
+                    output_dir: outputDir,
+                    allow_fallback: true,
+                });
+                if (upstream.data && upstream.data.success) {
+                    downloadedAudioPath = upstream.data.file;
+                }
+            }
+            catch (err) {
+                console.error('Unified download: SpotiFLAC failed', err);
+                // Continue, we might still download the video
+            }
+        }
+        // 3. Trigger Video download if we have a YouTube URL
+        let downloadedVideoPath = '';
+        if (youtubeUrl) {
+            try {
+                const targetDir = currentConfig.downloadDir || currentConfig.videoDir;
+                const args = {
+                    noCheckCertificates: true,
+                    noWarnings: true,
+                    format: 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                    mergeOutputFormat: 'mp4',
+                    output: path_1.default.join(targetDir, `%(title)s.%(ext)s`),
+                    noSimulate: true
+                };
+                const subprocess = youtube_dl_exec_1.default.exec(youtubeUrl, args);
+                yield new Promise((resolve, reject) => {
+                    var _a;
+                    let stdout = '';
+                    (_a = subprocess.stdout) === null || _a === void 0 ? void 0 : _a.on('data', (d) => stdout += d.toString());
+                    subprocess.on('close', (code) => {
+                        if (code === 0) {
+                            const matches = stdout.match(/Destination: (.*)$/m);
+                            const mergeMatch = stdout.match(/Merging formats into "(.*)"/m);
+                            if (mergeMatch && mergeMatch[1])
+                                downloadedVideoPath = mergeMatch[1];
+                            else if (matches && matches[1])
+                                downloadedVideoPath = matches[1];
+                            resolve(true);
+                        }
+                        else {
+                            reject(new Error(`yt-dlp exited with code ${code}`));
+                        }
+                    });
+                    subprocess.on('error', reject);
+                });
+            }
+            catch (err) {
+                console.error('Unified download: yt-dlp failed', err);
+            }
+        }
+        // 4. Sync library and automatically link if both downloaded
+        library.syncDisk();
+        if (downloadedAudioPath && downloadedVideoPath) {
+            const aExt = path_1.default.extname(downloadedAudioPath);
+            const aBase = path_1.default.basename(downloadedAudioPath, aExt);
+            const vExt = path_1.default.extname(downloadedVideoPath);
+            const vBase = path_1.default.basename(downloadedVideoPath, vExt);
+            const audioRec = db_1.db.prepare("SELECT id FROM files WHERE (absolutePath = ? OR baseName = ?) AND type = 'Music'").get(path_1.default.resolve(downloadedAudioPath), aBase);
+            const videoRec = db_1.db.prepare("SELECT id FROM files WHERE (absolutePath = ? OR baseName = ?) AND type = 'Video'").get(path_1.default.resolve(downloadedVideoPath), vBase);
+            if (audioRec && videoRec) {
+                db_1.db.prepare("INSERT OR REPLACE INTO pairs (id, audioId, videoId, status) VALUES (?, ?, ?, 'unified-download')").run(`uni-${audioRec.id}-${videoRec.id}`, audioRec.id, videoRec.id);
+            }
+        }
+        res.json({
+            success: true,
+            audioPath: downloadedAudioPath,
+            videoPath: downloadedVideoPath,
+            state: library.getMatchState()
+        });
+    }
+    catch (err) {
+        console.error('Unified download error:', err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+}));
 app.post('/api/download', (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         const { url, type, quality, filename } = req.body;
@@ -490,6 +616,14 @@ app.post('/api/quality/scan', (req, res) => __awaiter(void 0, void 0, void 0, fu
     })
         .then((results) => {
         lastScanResults = results;
+        // Persist quality labels to DB so Dashboard can surface warnings
+        const updateLabel = db_1.db.prepare('UPDATE files SET qualityLabel = ? WHERE absolutePath = ?');
+        for (const r of results) {
+            try {
+                updateLabel.run(r.label, r.absolutePath);
+            }
+            catch ( /* row may not exist in files table */_a) { /* row may not exist in files table */ }
+        }
     })
         .catch((err) => {
         console.error('Quality scan error:', err);
@@ -604,4 +738,86 @@ app.post('/api/quality/reanalyze', (req, res) => __awaiter(void 0, void 0, void 
         res.status(500).json({ success: false, error: err.message });
     }
 }));
+// POST /api/quality/spectrum — compute spectrogram data for a single file (on-demand)
+app.post('/api/quality/spectrum', (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    try {
+        const { absolutePath, fftSize = 4096 } = req.body;
+        if (!absolutePath)
+            return res.status(400).json({ success: false, error: 'absolutePath required' });
+        if (!fs_1.default.existsSync(absolutePath))
+            return res.status(404).json({ success: false, error: 'File not found' });
+        const result = yield (0, qualityChecker_1.computeSpectrum)(absolutePath, fftSize);
+        if (!result)
+            return res.status(422).json({ success: false, error: 'Could not compute spectrum' });
+        res.json({ success: true, spectrum: result.data, meta: result.meta });
+    }
+    catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+}));
+// ─── Local media streaming (supports HTTP Range requests for seek) ────────────
+app.get('/api/stream/:fileId', (req, res) => {
+    try {
+        const { fileId } = req.params;
+        const row = db_1.db.prepare('SELECT absolutePath FROM files WHERE id = ?').get(fileId);
+        if (!row)
+            return res.status(404).json({ success: false, error: 'File not found' });
+        const filePath = row.absolutePath;
+        if (!fs_1.default.existsSync(filePath))
+            return res.status(404).json({ success: false, error: 'File missing on disk' });
+        const stat = fs_1.default.statSync(filePath);
+        const fileSize = stat.size;
+        const ext = path_1.default.extname(filePath).toLowerCase().replace('.', '');
+        // Determine MIME type
+        const mimeMap = {
+            mp3: 'audio/mpeg', flac: 'audio/flac', wav: 'audio/wav', m4a: 'audio/mp4', aac: 'audio/aac',
+            ogg: 'audio/ogg', opus: 'audio/ogg',
+            mp4: 'video/mp4', mkv: 'video/x-matroska', webm: 'video/webm', avi: 'video/x-msvideo',
+            mov: 'video/quicktime', wmv: 'video/x-ms-wmv',
+        };
+        const contentType = mimeMap[ext] || 'application/octet-stream';
+        const rangeHeader = req.headers.range;
+        if (rangeHeader) {
+            const parts = rangeHeader.replace(/bytes=/, '').split('-');
+            const start = parseInt(parts[0], 10);
+            const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+            const chunkSize = end - start + 1;
+            res.writeHead(206, {
+                'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+                'Accept-Ranges': 'bytes',
+                'Content-Length': chunkSize,
+                'Content-Type': contentType,
+            });
+            fs_1.default.createReadStream(filePath, { start, end }).pipe(res);
+        }
+        else {
+            res.writeHead(200, {
+                'Content-Length': fileSize,
+                'Content-Type': contentType,
+                'Accept-Ranges': 'bytes',
+            });
+            fs_1.default.createReadStream(filePath).pipe(res);
+        }
+    }
+    catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+// ─── Manual Drag-and-Drop Match ───────────────────────────────────────────────
+app.post('/api/manual-match', (req, res) => {
+    const { audioId, videoId } = req.body;
+    if (!audioId || !videoId)
+        return res.status(400).json({ success: false, error: 'audioId and videoId required' });
+    const audio = db_1.db.prepare("SELECT id FROM files WHERE id = ? AND type = 'Music'").get(audioId);
+    const video = db_1.db.prepare("SELECT id FROM files WHERE id = ? AND type = 'Video'").get(videoId);
+    if (!audio)
+        return res.status(404).json({ success: false, error: 'Audio file not found' });
+    if (!video)
+        return res.status(404).json({ success: false, error: 'Video file not found' });
+    // Remove any existing pairs involving these files so we can re-link cleanly
+    db_1.db.prepare('DELETE FROM pairs WHERE audioId = ? OR videoId = ?').run(audioId, videoId);
+    const pairId = `manual-${audioId}-${videoId}`;
+    db_1.db.prepare("INSERT OR REPLACE INTO pairs (id, audioId, videoId, status) VALUES (?, ?, ?, 'manual')").run(pairId, audioId, videoId);
+    res.json({ success: true, state: library.getMatchState() });
+});
 app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));

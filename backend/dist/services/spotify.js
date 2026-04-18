@@ -165,5 +165,81 @@ class SpotifyService {
             }
         });
     }
+    /**
+     * Fetches track metadata directly using an open.spotify.com URL
+     */
+    getTrackInfoByUrl(url) {
+        return __awaiter(this, void 0, void 0, function* () {
+            var _a, _b;
+            const parts = url.split('/');
+            let trackId = (_a = parts.pop()) === null || _a === void 0 ? void 0 : _a.split('?')[0];
+            if (trackId === 'track')
+                trackId = (_b = parts.pop()) === null || _b === void 0 ? void 0 : _b.split('?')[0]; // Handle /track/ID/
+            if (!trackId)
+                return null;
+            try {
+                const token = yield this.getAccessToken();
+                if (token) {
+                    const res = yield axios_1.default.get(`https://api.spotify.com/v1/tracks/${trackId}`, {
+                        headers: { Authorization: `Bearer ${token}` }
+                    });
+                    if (res.data && res.data.name) {
+                        return {
+                            name: res.data.name,
+                            artists: (res.data.artists || []).map((a) => a.name)
+                        };
+                    }
+                }
+            }
+            catch (error) {
+                console.warn('Spotify API track lookup failed (likely 429 Rate Limit). Falling back to web scraping...', error instanceof Error ? error.message : '');
+            }
+            // Fallback: Fetch the web page title directly
+            try {
+                const webRes = yield axios_1.default.get(`https://open.spotify.com/track/${trackId}`, {
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36'
+                    }
+                });
+                const titleMatch = webRes.data.match(/<title>(.*?)<\/title>/i);
+                if (titleMatch && titleMatch[1]) {
+                    // e.g. "Another Day - song and lyrics by Monday Kiz, Punch | Spotify"
+                    const m = titleMatch[1].match(/(.*?) - song(?: and lyrics)? by (.*?) \| Spotify/i);
+                    if (m) {
+                        return {
+                            name: m[1].trim(),
+                            artists: m[2].split(',').map((a) => a.trim())
+                        };
+                    }
+                    // e.g. "Never Gonna Give You Up - Single by Rick Astley | Spotify"
+                    const m2 = titleMatch[1].match(/(.*?) - .*? by (.*?) \| Spotify/i);
+                    if (m2) {
+                        return {
+                            name: m2[1].trim(),
+                            artists: m2[2].split(',').map((a) => a.trim())
+                        };
+                    }
+                    // Worst case fallback via oEmbed if we can't parse title structure
+                }
+            }
+            catch (fallbackError) {
+                console.warn('Spotify web scraping fallback failed:', fallbackError instanceof Error ? fallbackError.message : '');
+            }
+            // Last Resort: oEmbed API
+            try {
+                const oembedRes = yield axios_1.default.get(`https://open.spotify.com/oembed?url=https://open.spotify.com/track/${trackId}`);
+                if (oembedRes.data && oembedRes.data.title) {
+                    return {
+                        name: oembedRes.data.title,
+                        artists: [] // We don't have artist info from oEmbed
+                    };
+                }
+            }
+            catch (oembedErr) {
+                console.error('Spotify oEmbed fallback also failed:', oembedErr instanceof Error ? oembedErr.message : '');
+            }
+            return null;
+        });
+    }
 }
 exports.SpotifyService = SpotifyService;

@@ -326,6 +326,133 @@ app.post('/api/spotiflac/download', async (req, res) => {
     res.status(500).json({ success: false, error: err.response?.data?.message || err.message });
   }
 });
+app.post('/api/unified-download', async (req, res) => {
+  try {
+    const { url } = req.body;
+    if (!url) return res.status(400).json({ success: false, error: 'URL required' });
+
+    let spotifyUrl = '';
+    let youtubeUrl = '';
+    let trackName = '';
+    let artistName = '';
+
+    // 1. Identify URL type and gather metadata
+    if (url.includes('spotify.com')) {
+      spotifyUrl = url;
+      const info = await spotify.getTrackInfoByUrl(url);
+      if (info) {
+        trackName = info.name;
+        artistName = info.artists.join(', ');
+        
+        // Find corresponding YouTube video
+        const ytResult = await youtube.findOfficialVideoSync(`${trackName} ${artistName}`);
+        if (ytResult) {
+          youtubeUrl = ytResult.url;
+        }
+      } else {
+        return res.status(404).json({ success: false, error: 'Could not fetch Spotify track info' });
+      }
+    } else if (url.includes('youtube.com') || url.includes('youtu.be')) {
+      youtubeUrl = url;
+      
+      // Get title via youtubedl
+      const ytData = await youtubedl(url, { dumpJson: true, noWarnings: true, noCheckCertificates: true }) as any;
+      if (ytData && ytData.title) {
+        // Clean title and search Spotify
+        const cleanTitle = await ollama.cleanQuery(ytData.title, currentConfig.ollamaModel || 'llama3');
+        const spResult = await spotify.findTrackUrl(cleanTitle || ytData.title);
+        if (spResult) {
+          spotifyUrl = spResult.url;
+        }
+      }
+    } else {
+      return res.status(400).json({ success: false, error: 'Must be a YouTube or Spotify URL' });
+    }
+
+    // 2. Trigger FLAC download if we have a Spotify URL
+    let downloadedAudioPath = '';
+    if (spotifyUrl) {
+      try {
+        const outputDir = currentConfig.downloadDir || currentConfig.audioDir;
+        const upstream = await axios.post('http://localhost:8080/spotiflac/download-best', {
+          spotify_url: spotifyUrl,
+          strategy: 'best',
+          output_dir: outputDir,
+          allow_fallback: true,
+        });
+        if (upstream.data && upstream.data.success) {
+          downloadedAudioPath = upstream.data.file;
+        }
+      } catch (err) {
+        console.error('Unified download: SpotiFLAC failed', err);
+        // Continue, we might still download the video
+      }
+    }
+
+    // 3. Trigger Video download if we have a YouTube URL
+    let downloadedVideoPath = '';
+    if (youtubeUrl) {
+      try {
+        const targetDir = currentConfig.downloadDir || currentConfig.videoDir;
+        const args: any = {
+           noCheckCertificates: true,
+           noWarnings: true,
+           format: 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+           mergeOutputFormat: 'mp4',
+           output: path.join(targetDir, `%(title)s.%(ext)s`),
+           noSimulate: true
+        };
+        const subprocess = youtubedl.exec(youtubeUrl, args);
+        
+        await new Promise((resolve, reject) => {
+           let stdout = '';
+           subprocess.stdout?.on('data', (d) => stdout += d.toString());
+           subprocess.on('close', (code) => {
+             if (code === 0) {
+                const matches = stdout.match(/Destination: (.*)$/m);
+                const mergeMatch = stdout.match(/Merging formats into "(.*)"/m);
+                if (mergeMatch && mergeMatch[1]) downloadedVideoPath = mergeMatch[1];
+                else if (matches && matches[1]) downloadedVideoPath = matches[1];
+                resolve(true);
+             } else {
+                reject(new Error(`yt-dlp exited with code ${code}`));
+             }
+           });
+           subprocess.on('error', reject);
+        });
+      } catch (err) {
+        console.error('Unified download: yt-dlp failed', err);
+      }
+    }
+
+    // 4. Sync library and automatically link if both downloaded
+    library.syncDisk();
+
+    if (downloadedAudioPath && downloadedVideoPath) {
+      const aExt = path.extname(downloadedAudioPath);
+      const aBase = path.basename(downloadedAudioPath, aExt);
+      const vExt = path.extname(downloadedVideoPath);
+      const vBase = path.basename(downloadedVideoPath, vExt);
+
+      const audioRec = db.prepare("SELECT id FROM files WHERE (absolutePath = ? OR baseName = ?) AND type = 'Music'").get(path.resolve(downloadedAudioPath), aBase) as any;
+      const videoRec = db.prepare("SELECT id FROM files WHERE (absolutePath = ? OR baseName = ?) AND type = 'Video'").get(path.resolve(downloadedVideoPath), vBase) as any;
+
+      if (audioRec && videoRec) {
+        db.prepare("INSERT OR REPLACE INTO pairs (id, audioId, videoId, status) VALUES (?, ?, ?, 'unified-download')").run(`uni-${audioRec.id}-${videoRec.id}`, audioRec.id, videoRec.id);
+      }
+    }
+
+    res.json({
+      success: true,
+      audioPath: downloadedAudioPath,
+      videoPath: downloadedVideoPath,
+      state: library.getMatchState()
+    });
+  } catch (err: any) {
+    console.error('Unified download error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
 
 app.post('/api/download', async (req, res) => {
   try {

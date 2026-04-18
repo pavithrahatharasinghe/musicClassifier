@@ -484,7 +484,7 @@ function Dashboard() {
                     isDragTarget={!!draggedAudioId}
                     isDragOver={dragOverVideoId === file.id}
                     onDragOver={(e) => { e.preventDefault(); setDragOverVideoId(file.id!); }}
-                    onDragLeave={(e) => {
+                    onDragLeave={() => {
                       // Already filtered in FileCard, but guard here too
                       setDragOverVideoId(null);
                     }}

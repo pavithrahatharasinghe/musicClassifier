@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import {
   FileAudio, FileVideo, Wand2, Unlink, CheckCircle2, HelpCircle,
-  Link2, Play, Pause, X, Music2, Film,
+  Link2, Pause, X, Music2, Film,
 } from 'lucide-react';
 import type { MatchedPair } from '../types';
 
@@ -82,7 +82,6 @@ interface MatchedPairCardProps {
 // ── Component ─────────────────────────────────────────────────────────────────
 function MatchedPairCard({ pair, onUnlink, onAnalyze, analyzing }: MatchedPairCardProps) {
   const [playerMode, setPlayerMode] = useState<null | 'audio' | 'video'>(null);
-  const [isPlaying, setIsPlaying] = useState(false);
   const audioRef = useRef<HTMLAudioElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
 
@@ -94,12 +93,10 @@ function MatchedPairCard({ pair, onUnlink, onAnalyze, analyzing }: MatchedPairCa
       // toggle off
       audioRef.current?.pause();
       videoRef.current?.pause();
-      setIsPlaying(false);
       setPlayerMode(null);
     } else {
       audioRef.current?.pause();
       videoRef.current?.pause();
-      setIsPlaying(false);
       setPlayerMode(mode);
     }
   }
@@ -107,7 +104,6 @@ function MatchedPairCard({ pair, onUnlink, onAnalyze, analyzing }: MatchedPairCa
   function closePlayer() {
     audioRef.current?.pause();
     videoRef.current?.pause();
-    setIsPlaying(false);
     setPlayerMode(null);
   }
 
@@ -232,9 +228,6 @@ function MatchedPairCard({ pair, onUnlink, onAnalyze, analyzing }: MatchedPairCa
             src={audioStreamUrl}
             controls
             autoPlay
-            onPlay={() => setIsPlaying(true)}
-            onPause={() => setIsPlaying(false)}
-            onEnded={() => setIsPlaying(false)}
             className="flex-1 h-8"
             style={{ accentColor: '#60a5fa' }}
           />
@@ -260,9 +253,6 @@ function MatchedPairCard({ pair, onUnlink, onAnalyze, analyzing }: MatchedPairCa
             src={videoStreamUrl}
             controls
             autoPlay
-            onPlay={() => setIsPlaying(true)}
-            onPause={() => setIsPlaying(false)}
-            onEnded={() => setIsPlaying(false)}
             className="w-full rounded bg-black aspect-video"
             style={{ maxHeight: 220 }}
           />
